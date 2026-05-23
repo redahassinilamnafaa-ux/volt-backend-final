@@ -26,7 +26,7 @@ module.exports = async function handler(req, res) {
       await sql`INSERT INTO verify_tokens (user_id, token, expires_at) VALUES (${user.id}, ${verifyToken}, ${expiry})`;
       const lien = `https://volt-backend-final.vercel.app/api/verify-email?token=${verifyToken}`;
       await resend.emails.send({
-        from: "VOLT. <onboarding@resend.dev>",
+        from: "VOLT. <noreply@volt-energy.ch>",
         to: email,
         subject: "⚡ Confirme ton compte VOLT.",
         html: `<div style="background:#0A0F1E;padding:40px 20px;font-family:Arial,sans-serif"><div style="max-width:480px;margin:0 auto;background:#111827;border-radius:20px;overflow:hidden"><div style="background:linear-gradient(135deg,#003FCC,#0057FF);padding:32px 36px"><div style="font-size:48px;font-weight:900;color:#fff;letter-spacing:-2px">VOLT.</div></div><div style="padding:32px 36px"><div style="font-size:22px;font-weight:800;color:#fff;margin-bottom:12px">Confirme ton email ⚡</div><div style="font-size:15px;color:rgba(255,255,255,0.6);line-height:1.7;margin-bottom:28px">Salut <strong style="color:#fff">${user.first_name}</strong>,<br/>Voici ton nouveau lien de confirmation.</div><a href="${lien}" style="display:block;background:#0057FF;color:#fff;text-align:center;padding:15px 24px;border-radius:50px;font-size:17px;font-weight:900;text-decoration:none">CONFIRMER MON EMAIL →</a><div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,0.25)">Ce lien expire dans 24h.</div></div></div></div>`
@@ -75,7 +75,7 @@ module.exports = async function handler(req, res) {
     const lien = `https://volt-backend-final.vercel.app/api/verify-email?token=${verifyToken}`;
     try {
       await resend.emails.send({
-        from: "VOLT. <onboarding@resend.dev>",
+        from: "VOLT. <noreply@volt-energy.ch>",
         to: u.email,
         subject: "⚡ Confirme ton compte VOLT.",
         html: `

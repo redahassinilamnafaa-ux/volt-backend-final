@@ -43,7 +43,7 @@ module.exports = async function handler(req, res) {
     // Email de bienvenue
     try {
       await resend.emails.send({
-        from: "VOLT. <onboarding@resend.dev>",
+        from: "VOLT. <noreply@volt-energy.ch>",
         to: email,
         subject: "⚡ Bienvenue chez VOLT. — Ton compte est actif !",
         html: `
