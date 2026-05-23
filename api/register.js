@@ -10,6 +10,31 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 module.exports = async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  // ── POST /api/register?action=resend → Renvoyer email confirmation ──
+  if (req.method === "POST" && req.query.action === "resend") {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: "Email manquant." });
+    try {
+      const users = await sql`SELECT id, first_name, email_verified FROM users WHERE email = ${email.toLowerCase()}`;
+      if (!users.length) return res.status(400).json({ error: "Utilisateur introuvable." });
+      const user = users[0];
+      if (user.email_verified) return res.status(400).json({ error: "Email déjà vérifié." });
+      await sql`DELETE FROM verify_tokens WHERE user_id = ${user.id}`;
+      const verifyToken = crypto.randomBytes(32).toString("hex");
+      const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await sql`INSERT INTO verify_tokens (user_id, token, expires_at) VALUES (${user.id}, ${verifyToken}, ${expiry})`;
+      const lien = `https://volt-backend-final.vercel.app/api/verify-email?token=${verifyToken}`;
+      await resend.emails.send({
+        from: "VOLT. <onboarding@resend.dev>",
+        to: email,
+        subject: "⚡ Confirme ton compte VOLT.",
+        html: `<div style="background:#0A0F1E;padding:40px 20px;font-family:Arial,sans-serif"><div style="max-width:480px;margin:0 auto;background:#111827;border-radius:20px;overflow:hidden"><div style="background:linear-gradient(135deg,#003FCC,#0057FF);padding:32px 36px"><div style="font-size:48px;font-weight:900;color:#fff;letter-spacing:-2px">VOLT.</div></div><div style="padding:32px 36px"><div style="font-size:22px;font-weight:800;color:#fff;margin-bottom:12px">Confirme ton email ⚡</div><div style="font-size:15px;color:rgba(255,255,255,0.6);line-height:1.7;margin-bottom:28px">Salut <strong style="color:#fff">${user.first_name}</strong>,<br/>Voici ton nouveau lien de confirmation.</div><a href="${lien}" style="display:block;background:#0057FF;color:#fff;text-align:center;padding:15px 24px;border-radius:50px;font-size:17px;font-weight:900;text-decoration:none">CONFIRMER MON EMAIL →</a><div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,0.25)">Ce lien expire dans 24h.</div></div></div></div>`
+      });
+      return res.json({ ok: true });
+    } catch(e) { return res.status(500).json({ error: "Erreur: " + e.message }); }
+  }
+
   if (req.method !== "POST") return res.status(405).end();
 
   const { firstName, lastName, email, phone, password } = req.body || {};
