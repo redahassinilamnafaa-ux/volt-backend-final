@@ -12,7 +12,6 @@ module.exports = async function handler(req, res) {
   if (!token) return res.status(400).send("Token manquant.");
 
   try {
-    // Cherche le token sans jointure d'abord
     const tokens = await sql`
       SELECT * FROM verify_tokens
       WHERE token = ${token}
@@ -20,27 +19,26 @@ module.exports = async function handler(req, res) {
     `;
 
     if (!tokens.length) {
-      return res.redirect("https://energy-volt.vercel.app?verify=expired");
+      return res.redirect("https://energy-volt.vercel.app/VoltApp.html?verify=expired");
     }
 
-    const { user_id } = tokens[0];
+    const user_id = tokens[0].user_id;
 
-    // Cherche l'utilisateur séparément
+    // user_id est TEXT, users.id est UUID — on caste users.id en text
     const users = await sql`
-      SELECT id, email, first_name FROM users WHERE id = ${user_id}
+      SELECT id, email, first_name FROM users
+      WHERE id::text = ${user_id}
     `;
 
     if (!users.length) {
-      return res.redirect("https://energy-volt.vercel.app?verify=expired");
+      return res.redirect("https://energy-volt.vercel.app/VoltApp.html?verify=expired");
     }
 
     const { id, email, first_name } = users[0];
 
-    // Met à jour et supprime le token
-    await sql`UPDATE users SET email_verified = true WHERE id = ${user_id}`;
+    await sql`UPDATE users SET email_verified = true WHERE id = ${id}`;
     await sql`DELETE FROM verify_tokens WHERE token = ${token}`;
 
-    // Email de bienvenue
     try {
       await resend.emails.send({
         from: "VOLT. <noreply@volt-energy.ch>",
@@ -56,14 +54,14 @@ module.exports = async function handler(req, res) {
               <div style="padding:32px 36px">
                 <div style="font-size:15px;color:rgba(255,255,255,0.6);line-height:1.8;margin-bottom:24px">
                   Salut <strong style="color:#fff">${first_name}</strong> 👋<br/><br/>
-                  Ton compte est <strong style="color:#00C47A">confirmé et actif</strong>. Choisis ton abonnement pour accéder aux machines VOLT. en un scan.
+                  Ton compte est <strong style="color:#00C47A">confirmé et actif</strong>. Connecte-toi pour accéder à VOLT.
                 </div>
-                <a href="https://energy-volt.vercel.app" style="display:block;background:#0057FF;color:#fff;text-align:center;padding:15px 24px;border-radius:50px;font-size:17px;font-weight:900;text-decoration:none">
-                  ACCÉDER À MON COMPTE →
+                <a href="https://energy-volt.vercel.app/VoltApp.html" style="display:block;background:#0057FF;color:#fff;text-align:center;padding:15px 24px;border-radius:50px;font-size:17px;font-weight:900;text-decoration:none">
+                  SE CONNECTER →
                 </a>
               </div>
               <div style="padding:16px 36px 28px;border-top:1px solid rgba(255,255,255,0.05)">
-                <div style="font-size:12px;color:rgba(255,255,255,0.2)">VOLT. Energy · Genève · info@volt.energy.ch</div>
+                <div style="font-size:12px;color:rgba(255,255,255,0.2)">VOLT. Energy · Genève · info@volt-energy.ch</div>
               </div>
             </div>
           </div>
@@ -73,7 +71,7 @@ module.exports = async function handler(req, res) {
       console.error("Welcome email error:", e);
     }
 
-    return res.redirect("https://energy-volt.vercel.app?verify=success");
+    return res.redirect("https://energy-volt.vercel.app/VoltApp.html?verify=success");
 
   } catch(e) {
     console.error("verify-email error:", e);
