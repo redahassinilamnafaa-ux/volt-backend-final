@@ -47,7 +47,7 @@ module.exports = async function handler(req, res) {
     `;
 
     // ── Envoie l'email de confirmation ─────────────────────────────
-    const lien = `https://volt-backend-final-z3ol.vercel.app/api/verify-email?token=${verifyToken}`;
+    const lien = `https://volt-backend-final.vercel.app/api/verify-email?token=${verifyToken}`;
     try {
       await resend.emails.send({
         from: "VOLT. <onboarding@resend.dev>",
