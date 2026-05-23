@@ -48,7 +48,7 @@ module.exports = async function handler(req, res) {
           <div style="background:#0A0F1E;padding:40px 20px;font-family:Arial,sans-serif">
             <div style="max-width:480px;margin:0 auto;background:#111827;border-radius:20px;overflow:hidden">
               <div style="background:linear-gradient(135deg,#003FCC,#2979FF);padding:32px 36px">
-                <div style="font-size:48px;font-weight:900;color:#fff;letter-spacing:-2px">VOLT.</div>
+                <div style="font-size:52px;font-weight:900;color:#fff;letter-spacing:-2px;text-shadow:0 0 40px rgba(255,255,255,.3)">VOLT.</div>
                 <div style="font-size:24px;font-weight:800;color:#fff;margin-top:14px;line-height:1.2">Bienvenue dans<br/>la zone VOLT. ⚡</div>
               </div>
               <div style="padding:32px 36px">
@@ -61,7 +61,7 @@ module.exports = async function handler(req, res) {
                 </a>
               </div>
               <div style="padding:16px 36px 28px;border-top:1px solid rgba(255,255,255,0.05)">
-                <div style="font-size:12px;color:rgba(255,255,255,0.2)">VOLT. Energy · Genève · info@volt-energy.ch</div>
+                <div style="font-size:12px;color:rgba(255,255,255,0.2)">VOLT. Energy · Crissier · info@volt-energy.ch</div>
               </div>
             </div>
           </div>
