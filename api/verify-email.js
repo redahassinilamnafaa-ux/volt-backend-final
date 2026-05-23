@@ -1,5 +1,5 @@
-const cors    = require("../lib/cors");
-const sql     = require("../lib/db");
+const cors       = require("../lib/cors");
+const sql        = require("../lib/db");
 const { Resend } = require("resend");
 
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -12,23 +12,35 @@ module.exports = async function handler(req, res) {
   if (!token) return res.status(400).send("Token manquant.");
 
   try {
-    const rows = await sql`
-      SELECT vt.user_id, vt.token, u.email, u.first_name
-      FROM verify_tokens vt
-      JOIN users u ON u.id::text = vt.user_id
-      WHERE vt.token = ${token}
-      AND vt.expires_at > NOW()
+    // Cherche le token sans jointure d'abord
+    const tokens = await sql`
+      SELECT * FROM verify_tokens
+      WHERE token = ${token}
+      AND expires_at > NOW()
     `;
 
-    if (!rows.length) {
+    if (!tokens.length) {
       return res.redirect("https://energy-volt.vercel.app?verify=expired");
     }
 
-    const { user_id, email, first_name } = rows[0];
+    const { user_id } = tokens[0];
 
-    await sql`UPDATE users SET email_verified = true WHERE id::text = ${user_id}`;
+    // Cherche l'utilisateur séparément
+    const users = await sql`
+      SELECT id, email, first_name FROM users WHERE id = ${parseInt(user_id)}
+    `;
+
+    if (!users.length) {
+      return res.redirect("https://energy-volt.vercel.app?verify=expired");
+    }
+
+    const { id, email, first_name } = users[0];
+
+    // Met à jour et supprime le token
+    await sql`UPDATE users SET email_verified = true WHERE id = ${id}`;
     await sql`DELETE FROM verify_tokens WHERE token = ${token}`;
 
+    // Email de bienvenue
     try {
       await resend.emails.send({
         from: "VOLT. <onboarding@resend.dev>",
