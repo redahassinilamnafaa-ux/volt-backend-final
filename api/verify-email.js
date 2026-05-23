@@ -27,7 +27,7 @@ module.exports = async function handler(req, res) {
 
     // Cherche l'utilisateur séparément
     const users = await sql`
-      SELECT id, email, first_name FROM users WHERE id = ${parseInt(user_id)}
+      SELECT id, email, first_name FROM users WHERE id = ${user_id}
     `;
 
     if (!users.length) {
@@ -37,7 +37,7 @@ module.exports = async function handler(req, res) {
     const { id, email, first_name } = users[0];
 
     // Met à jour et supprime le token
-    await sql`UPDATE users SET email_verified = true WHERE id = ${id}`;
+    await sql`UPDATE users SET email_verified = true WHERE id = ${user_id}`;
     await sql`DELETE FROM verify_tokens WHERE token = ${token}`;
 
     // Email de bienvenue
