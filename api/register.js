@@ -45,7 +45,7 @@ module.exports = async function handler(req, res) {
     const lien = `https://volt-backend-final-z3ol.vercel.app/api/verify-email?token=${verifyToken}`;
     try {
       await resend.emails.send({
-        from: "VOLT. <noreply@volt.energy.ch>",
+        from: "VOLT. <onboarding@resend.dev>",
         to: u.email,
         subject: "⚡ Confirme ton compte VOLT.",
         html: `
