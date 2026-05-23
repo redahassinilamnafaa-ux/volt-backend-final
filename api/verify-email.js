@@ -29,7 +29,6 @@ module.exports = async function handler(req, res) {
     await sql`UPDATE users SET email_verified = true WHERE id::text = ${user_id}`;
     await sql`DELETE FROM verify_tokens WHERE token = ${token}`;
 
-    // Email de bienvenue
     try {
       await resend.emails.send({
         from: "VOLT. <onboarding@resend.dev>",
