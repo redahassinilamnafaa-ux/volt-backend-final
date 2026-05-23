@@ -1,3 +1,5 @@
+import { sendConfirmationEmail } from './send-email.js';
+import crypto from 'crypto';
 const cors          = require("../lib/cors");
 const sql           = require("../lib/db");
 const { signToken } = require("../lib/auth");
