@@ -18,6 +18,11 @@ module.exports = async function handler(req, res) {
   if (password.length < 8)
     return res.status(400).json({ error: "Mot de passe minimum 8 caractères." });
 
+  // ── Validation format email ─────────────────────────────────────
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email))
+    return res.status(400).json({ error: "Adresse email invalide." });
+
   try {
     const exists = await sql`SELECT id FROM users WHERE email = ${email.toLowerCase()}`;
     if (exists.length > 0)
@@ -77,7 +82,6 @@ module.exports = async function handler(req, res) {
       });
     } catch (emailErr) {
       console.error("Email confirmation error:", emailErr);
-      // On ne bloque pas l'inscription si l'email échoue
     }
 
     // ── Retourne le token JWT et les infos utilisateur ──────────────
