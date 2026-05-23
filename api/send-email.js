@@ -6,7 +6,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 export async function sendConfirmationEmail(email, prenom, token) {
   const lien = `https://volt-backend-final-z3ol.vercel.app/api/verify-email?token=${token}`;
   await resend.emails.send({
-    from: 'VOLT. <noreply@volt.energy.ch>',
+    from: 'VOLT. <onboarding@resend.dev>',
     to: email,
     subject: '⚡ Confirme ton compte VOLT.',
     html: `
@@ -41,7 +41,7 @@ export async function sendConfirmationEmail(email, prenom, token) {
 // Email de bienvenue (après confirmation)
 export async function sendWelcomeEmail(email, prenom) {
   await resend.emails.send({
-    from: 'VOLT. <noreply@volt.energy.ch>',
+    from: 'VOLT. <onboarding@resend.dev>',
     to: email,
     subject: '⚡ Bienvenue chez VOLT. — Ton compte est actif !',
     html: `
