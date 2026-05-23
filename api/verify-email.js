@@ -24,7 +24,6 @@ module.exports = async function handler(req, res) {
 
     const user_id = tokens[0].user_id;
 
-    // user_id est TEXT, users.id est UUID — on caste users.id en text
     const users = await sql`
       SELECT id, email, first_name FROM users
       WHERE id::text = ${user_id}
@@ -44,28 +43,7 @@ module.exports = async function handler(req, res) {
         from: "VOLT. <noreply@volt-energy.ch>",
         to: email,
         subject: "⚡ Bienvenue chez VOLT. — Ton compte est actif !",
-        html: `
-          <div style="background:#0A0F1E;padding:40px 20px;font-family:Arial,sans-serif">
-            <div style="max-width:480px;margin:0 auto;background:#111827;border-radius:20px;overflow:hidden">
-              <div style="background:linear-gradient(135deg,#003FCC,#2979FF);padding:32px 36px">
-                <div style="font-size:52px;font-weight:900;color:#fff;letter-spacing:-2px;text-shadow:0 0 40px rgba(255,255,255,.3)">VOLT.</div>
-                <div style="font-size:24px;font-weight:800;color:#fff;margin-top:14px;line-height:1.2">Bienvenue dans<br/>la zone VOLT. ⚡</div>
-              </div>
-              <div style="padding:32px 36px">
-                <div style="font-size:15px;color:rgba(255,255,255,0.6);line-height:1.8;margin-bottom:24px">
-                  Salut <strong style="color:#fff">${first_name}</strong> 👋<br/><br/>
-                  Ton compte est <strong style="color:#00C47A">confirmé et actif</strong>. Connecte-toi pour accéder à VOLT.
-                </div>
-                <a href="https://energy-volt.vercel.app/VoltApp.html" style="display:block;background:#0057FF;color:#fff;text-align:center;padding:15px 24px;border-radius:50px;font-size:17px;font-weight:900;text-decoration:none">
-                  SE CONNECTER →
-                </a>
-              </div>
-              <div style="padding:16px 36px 28px;border-top:1px solid rgba(255,255,255,0.05)">
-                <div style="font-size:12px;color:rgba(255,255,255,0.2)">VOLT. Energy · Crissier · info@volt-energy.ch</div>
-              </div>
-            </div>
-          </div>
-        `
+        html: `<div style="background:#060D2E;padding:40px 20px;font-family:Arial,sans-serif"><div style="max-width:480px;margin:0 auto;border-radius:24px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5)"><div style="background:linear-gradient(135deg,#060D2E 0%,#0A1A5C 40%,#0D2280 70%,#1a3aaa 100%);padding:40px 36px 36px;position:relative;overflow:hidden"><div style="position:absolute;top:0;right:0;width:300px;height:300px;background:radial-gradient(ellipse at 80% 20%,rgba(0,87,255,.6),transparent 70%);pointer-events:none"></div><div style="position:relative;z-index:1"><div style="font-size:64px;font-weight:900;color:#ffffff;letter-spacing:-3px;line-height:1;font-family:Arial Black,Arial,sans-serif">VOLT.</div><div style="font-size:13px;color:rgba(255,255,255,0.45);margin-top:8px;font-weight:600;letter-spacing:.08em;text-transform:uppercase">Système d'accès à l'aide d'un QR code</div></div></div><div style="background:#0f1729;padding:32px 36px"><div style="font-size:22px;font-weight:800;color:#ffffff;margin-bottom:12px">Bienvenue dans la zone VOLT. ⚡</div><div style="font-size:15px;color:rgba(255,255,255,0.6);line-height:1.8;margin-bottom:24px">Salut <strong style="color:#fff">${first_name}</strong> 👋<br/><br/>Ton compte est <strong style="color:#00C47A">confirmé et actif</strong>. Connecte-toi pour accéder à VOLT.</div><a href="https://energy-volt.vercel.app/VoltApp.html" style="display:block;background:linear-gradient(135deg,#003FCC,#0057FF);color:#fff;text-align:center;padding:16px 24px;border-radius:50px;font-size:18px;font-weight:900;text-decoration:none;letter-spacing:.02em">SE CONNECTER →</a></div><div style="background:#080e1f;padding:18px 36px 24px;border-top:1px solid rgba(255,255,255,0.06)"><div style="font-size:12px;color:rgba(255,255,255,0.2);line-height:1.8">VOLT. Energy · Crissier · Switzerland<br/><a href="mailto:info@volt-energy.ch" style="color:rgba(0,87,255,0.5);text-decoration:none">info@volt-energy.ch</a></div></div></div></div>`
       });
     } catch(e) {
       console.error("Welcome email error:", e);
