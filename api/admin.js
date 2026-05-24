@@ -36,12 +36,22 @@ module.exports = async function handler(req, res) {
   if (action === "clients") {
     try {
       const rows = await sql`
-        SELECT u.id,u.first_name,u.last_name,u.email,u.plan,u.subscribed,u.authorized,u.created_at,
+        SELECT u.id,u.first_name,u.last_name,u.email,u.plan,u.subscribed,u.authorized,u.email_verified,u.created_at,
           g.name as gym_name,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p WHERE p.user_id=u.id AND p.status='success') as revenue
         FROM users u LEFT JOIN gyms g ON u.gym_id=g.id ORDER BY u.created_at DESC`;
-      return res.json({ clients: rows.map(c=>({ id:c.id, name:c.first_name+' '+c.last_name, email:c.email, plan:c.plan, subscribed:c.subscribed, authorized:c.authorized, gym:c.gym_name||'—', scans:parseInt(c.scans)||0, revenue:parseFloat(c.revenue)||0, joined:new Date(c.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'}) })) });
+      return res.json({ clients: rows.map(c=>({ id:c.id, name:c.first_name+' '+c.last_name, email:c.email, plan:c.plan, subscribed:c.subscribed, authorized:c.authorized, email_verified:c.email_verified, gym:c.gym_name||'—', scans:parseInt(c.scans)||0, revenue:parseFloat(c.revenue)||0, joined:new Date(c.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'}) })) });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── access (bloquer/débloquer un client) ───────────────
+  if (action === "access" && req.method === "POST") {
+    const { user_id, authorized } = req.body||{};
+    if (!user_id) return res.status(400).json({ error:"user_id requis." });
+    try {
+      await sql`UPDATE users SET authorized=${authorized} WHERE id=${user_id}`;
+      return res.json({ ok:true });
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
