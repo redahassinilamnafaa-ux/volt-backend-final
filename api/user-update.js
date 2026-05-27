@@ -52,6 +52,8 @@ module.exports = async function handler(req, res) {
     if (!firstName || !lastName || !email)
       return res.status(400).json({ error: "Champs obligatoires manquants." });
     try {
+      const [existing] = await sql`SELECT id FROM users WHERE email = ${email.toLowerCase()} AND id != ${auth.id}`;
+      if (existing) return res.status(400).json({ error: "Cette adresse email est déjà utilisée." });
       await sql`
         UPDATE users
         SET first_name = ${firstName},
