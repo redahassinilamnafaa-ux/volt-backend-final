@@ -13,6 +13,39 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
+  // ── GET /api/user-update?action=me → Profil utilisateur ────────
+  if (req.method === "GET" && req.query.action === "me") {
+    try {
+      const [u] = await sql`
+        SELECT u.*, g.name AS gym_name,
+          (SELECT COUNT(*) FROM users WHERE referred_by = u.id AND subscribed = true) AS ref_count
+        FROM users u LEFT JOIN gyms g ON u.gym_id = g.id
+        WHERE u.id = ${auth.id}
+      `;
+      if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
+      if (u.subscribed && u.sub_expires_at && new Date(u.sub_expires_at) < new Date()) {
+        u.subscribed = false;
+        sql`UPDATE users SET subscribed = false WHERE id = ${u.id}`.catch(() => {});
+      }
+      return res.json({
+        user: {
+          id: u.id, name: `${u.first_name} ${u.last_name}`,
+          email: u.email, phone: u.phone,
+          initials: (u.first_name[0] + u.last_name[0]).toUpperCase(),
+          plan: u.plan, subscribed: u.subscribed, authorized: u.authorized,
+          gym: u.gym_name || null, gym_id: u.gym_id,
+          referral_code: u.referral_code,
+          referral_count: parseInt(u.ref_count) || 0,
+          free_months: u.free_months,
+          email_verified: u.email_verified,
+          sub_expires_at: u.sub_expires_at ? new Date(u.sub_expires_at).toISOString() : null,
+        }
+      });
+    } catch (e) {
+      return res.status(500).json({ error: "Erreur: " + e.message });
+    }
+  }
+
   // ── POST /api/user-update → Modifier le profil ─────────────────
   if (req.method === "POST" && !req.query.action) {
     const { firstName, lastName, email, phone } = req.body || {};
@@ -36,7 +69,6 @@ module.exports = async function handler(req, res) {
   // ── DELETE /api/user-update → Supprimer le compte ──────────────
   if (req.method === "DELETE") {
     try {
-      // Annuler l'abonnement Stripe si actif (conformité App Store)
       const [userData] = await sql`SELECT stripe_customer FROM users WHERE id = ${auth.id}`;
       if (userData?.stripe_customer) {
         try {
@@ -54,7 +86,6 @@ module.exports = async function handler(req, res) {
         }
       }
 
-      // Supprimer toutes les données liées au compte
       await sql`DELETE FROM qr_tokens    WHERE user_id = ${String(auth.id)}`;
       await sql`DELETE FROM cooldowns    WHERE user_id = ${auth.id}`;
       await sql`DELETE FROM scans        WHERE user_id = ${auth.id}`;
