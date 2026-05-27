@@ -1,11 +1,15 @@
 const cors            = require("../lib/cors");
 const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
+
 module.exports = async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "GET") return res.status(405).end();
+
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
+
   try {
     const rows = await sql`
       SELECT s.scanned_at, g.name AS gym_name

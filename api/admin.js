@@ -82,21 +82,21 @@ module.exports = async function handler(req, res) {
     if (!name||!filiale||!email||!password) return res.status(400).json({ error:"Champs manquants." });
     try {
       const hash = await bcrypt.hash(password, 10);
-      const [g] = await sql`INSERT INTO gyms (name,address,filiale,email,password) VALUES (${name},${address||null},${filiale},${email.toLowerCase()},${hash}) RETURNING id,name,filiale,email`;
+      const [g] = await sql`INSERT INTO gyms (name,address,filiale,email,password) VALUES (${name},${address||null},${filiale},${email.toLowerCase()},${hash}) RETURNING id,name,filiale,email,address`;
       return res.status(201).json({ ok:true, gym:g });
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
   // ── gyms PUT (modifier) ────────────────────────────────
   if (action === "gyms" && req.method === "PUT") {
-    const { id, name, filiale, email, password } = req.body||{};
+    const { id, name, address, filiale, email, password } = req.body||{};
     if (!id) return res.status(400).json({ error:"id requis." });
     try {
       if (password) {
         const hash = await bcrypt.hash(password, 10);
-        await sql`UPDATE gyms SET name=${name},filiale=${filiale},email=${email.toLowerCase()},password=${hash} WHERE id=${id}`;
+        await sql`UPDATE gyms SET name=${name},address=${address||null},filiale=${filiale},email=${email.toLowerCase()},password=${hash} WHERE id=${id}`;
       } else {
-        await sql`UPDATE gyms SET name=${name},filiale=${filiale},email=${email.toLowerCase()} WHERE id=${id}`;
+        await sql`UPDATE gyms SET name=${name},address=${address||null},filiale=${filiale},email=${email.toLowerCase()} WHERE id=${id}`;
       }
       return res.json({ ok:true });
     } catch(e) { return res.status(500).json({ error:e.message }); }
