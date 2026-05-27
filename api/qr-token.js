@@ -1,7 +1,7 @@
-const cors       = require("../lib/cors");
-const sql        = require("../lib/db");
+const cors            = require("../lib/cors");
+const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
-const crypto     = require("crypto");
+const crypto          = require("crypto");
 
 const QR_TTL = 2 * 60; // 2 minutes en secondes
 
@@ -14,6 +14,14 @@ module.exports = async function handler(req, res) {
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
   try {
+    // Vérifier que l'email est confirmé avant de générer un QR
+    const [u] = await sql`
+      SELECT email_verified FROM users WHERE id = ${auth.id}
+    `;
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
+    if (!u.email_verified)
+      return res.status(403).json({ error: "Vérifie ton email avant de générer un QR code.", code: "EMAIL_NOT_VERIFIED" });
+
     // Supprime les anciens tokens de cet utilisateur
     await sql`DELETE FROM qr_tokens WHERE user_id = ${String(auth.id)}`;
 
@@ -26,7 +34,7 @@ module.exports = async function handler(req, res) {
       VALUES (${String(auth.id)}, ${token}, ${expiry})
     `;
 
-    return res.json({ 
+    return res.json({
       token,
       expires_at: expiry.toISOString(),
       ttl: QR_TTL,
