@@ -9,8 +9,6 @@ const PRICE_IDS = {
   year:    process.env.STRIPE_PRICE_YEAR,
 };
 
-const DUR = { month: 1, quarter: 3, year: 12 };
-
 module.exports = async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -28,55 +26,51 @@ module.exports = async function handler(req, res) {
     const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
+    // Créer ou récupérer le customer Stripe
     let customerId = u.stripe_customer;
     if (!customerId) {
       const customer = await stripe.customers.create({
         email: u.email,
         name:  `${u.first_name} ${u.last_name}`,
-        metadata: { volt_user_id: String(u.id) },
+        metadata: { volt_user_id: u.id },
       });
       customerId = customer.id;
       await sql`UPDATE users SET stripe_customer = ${customerId} WHERE id = ${u.id}`;
     }
 
-    // TWINT : paiement unique via PaymentIntent
+    // ── TWINT : PaymentIntent one-time ────────────────────────────────
     if (method === 'twint') {
-      const months = DUR[plan_id];
       const price = await stripe.prices.retrieve(priceId);
-      const amount = price.unit_amount;
       const paymentIntent = await stripe.paymentIntents.create({
-        amount,
-        currency: "chf",
+        amount:   price.unit_amount,
+        currency: price.currency,
         customer: customerId,
-        payment_method_types: ["twint"],
-        metadata: {
-          volt_user_id: String(u.id),
-          plan:         plan_id,
-          months:       String(months),
-          payment_type: "twint",
-        },
-        return_url: return_url || "https://energy-volt.vercel.app/VoltApp.html?payment=twint_success",
+        payment_method_types: ['twint'],
+        metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
+        ...(return_url ? { return_url } : {}),
       });
       return res.json({
-        client_secret:     paymentIntent.client_secret,
+        client_secret: paymentIntent.client_secret,
         payment_intent_id: paymentIntent.id,
+        customer_id: customerId,
+        price_id: priceId,
         plan_id,
-        amount_chf:        amount / 100,
+        method: 'twint',
       });
     }
 
-    // Carte : SetupIntent pour enregistrer la carte puis créer abonnement
+    // ── CARTE : SetupIntent → Subscription ───────────────────────────
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
       payment_method_types: ['card'],
-      metadata: { plan_id, volt_user_id: u.id, price_id: priceId },
+      metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
     });
 
     return res.json({
-      client_secret:   setupIntent.client_secret,
+      client_secret: setupIntent.client_secret,
       setup_intent_id: setupIntent.id,
-      customer_id:     customerId,
-      price_id:        priceId,
+      customer_id: customerId,
+      price_id: priceId,
       plan_id,
     });
 
