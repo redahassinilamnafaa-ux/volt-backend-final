@@ -13,7 +13,43 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
-  const { setup_intent_id, payment_method_id, plan_id, customer_id, price_id } = req.body || {};
+  const { setup_intent_id, payment_method_id, plan_id, customer_id, price_id,
+          payment_intent_id, method } = req.body || {};
+
+  // ── TWINT : vérification du PaymentIntent et activation ──────────
+  if (method === 'twint') {
+    if (!payment_intent_id) return res.status(400).json({ error: "payment_intent_id manquant." });
+    try {
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+      const pi = await stripe.paymentIntents.retrieve(payment_intent_id);
+      if (pi.status !== 'succeeded') return res.status(400).json({ error: "Paiement non confirmé." });
+
+      const pidPlan = pi.metadata.plan_id;
+      if (String(pi.metadata.volt_user_id) !== String(auth.id))
+        return res.status(403).json({ error: "Non autorisé." });
+
+      const months = DUR[pidPlan];
+      if (!months) return res.status(400).json({ error: "Plan invalide." });
+
+      const exp = new Date();
+      exp.setMonth(exp.getMonth() + months);
+
+      await sql`UPDATE users SET subscribed = true, plan = ${pidPlan}, sub_expires_at = ${exp} WHERE id = ${auth.id}`;
+      await sql`
+        INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
+        VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
+        ON CONFLICT (stripe_payment_id) DO NOTHING
+      `;
+      const [u2] = await sql`SELECT referred_by FROM users WHERE id = ${auth.id}`;
+      if (u2?.referred_by)
+        await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u2.referred_by}`;
+
+      return res.json({ ok: true });
+    } catch(e) {
+      return res.status(500).json({ error: "Erreur TWINT: " + e.message });
+    }
+  }
+
   if (!setup_intent_id || !payment_method_id || !plan_id)
     return res.status(400).json({ error: "Paramètres manquants." });
 

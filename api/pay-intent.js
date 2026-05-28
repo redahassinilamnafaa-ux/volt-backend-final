@@ -17,7 +17,7 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
-  const { plan_id } = req.body || {};
+  const { plan_id, method, return_url } = req.body || {};
   const priceId = PRICE_IDS[plan_id];
   if (!priceId) return res.status(400).json({ error: "Plan invalide." });
 
@@ -38,12 +38,32 @@ module.exports = async function handler(req, res) {
       await sql`UPDATE users SET stripe_customer = ${customerId} WHERE id = ${u.id}`;
     }
 
-    // Créer une SetupIntent pour enregistrer la carte
-    // puis créer l'abonnement après confirmation
+    // ── TWINT : PaymentIntent one-time ────────────────────────────────
+    if (method === 'twint') {
+      const price = await stripe.prices.retrieve(priceId);
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount:   price.unit_amount,
+        currency: price.currency,
+        customer: customerId,
+        payment_method_types: ['twint'],
+        metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
+        ...(return_url ? { return_url } : {}),
+      });
+      return res.json({
+        client_secret: paymentIntent.client_secret,
+        payment_intent_id: paymentIntent.id,
+        customer_id: customerId,
+        price_id: priceId,
+        plan_id,
+        method: 'twint',
+      });
+    }
+
+    // ── CARTE : SetupIntent → Subscription ───────────────────────────
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
       payment_method_types: ['card'],
-      metadata: { plan_id, volt_user_id: u.id, price_id: priceId },
+      metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
     });
 
     return res.json({
