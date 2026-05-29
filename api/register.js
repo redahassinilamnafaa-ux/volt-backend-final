@@ -37,7 +37,7 @@ module.exports = async function handler(req, res) {
 
   if (req.method !== "POST") return res.status(405).end();
 
-  const { firstName, lastName, email, phone, password } = req.body || {};
+  const { firstName, lastName, email, phone, password, ref_code } = req.body || {};
   if (!firstName || !lastName || !email || !password)
     return res.status(400).json({ error: "Champs obligatoires manquants." });
   if (password.length < 8)
@@ -55,9 +55,15 @@ module.exports = async function handler(req, res) {
     const hash = await bcrypt.hash(password, 10);
     const code = "VOLT" + Math.random().toString(36).slice(2, 8).toUpperCase();
 
+    let referredById = null;
+    if (ref_code) {
+      const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${ref_code.toUpperCase()}`;
+      if (referrer) referredById = referrer.id;
+    }
+
     const [u] = await sql`
-      INSERT INTO users (first_name, last_name, email, phone, password, referral_code)
-      VALUES (${firstName}, ${lastName}, ${email.toLowerCase()}, ${phone || null}, ${hash}, ${code})
+      INSERT INTO users (first_name, last_name, email, phone, password, referral_code, referred_by)
+      VALUES (${firstName}, ${lastName}, ${email.toLowerCase()}, ${phone || null}, ${hash}, ${code}, ${referredById})
       RETURNING id, first_name, last_name, email, phone, plan, subscribed, authorized, referral_code, free_months
     `;
 
