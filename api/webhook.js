@@ -58,18 +58,21 @@ module.exports = async function handler(req, res) {
       // Paiement TWINT réussi
       case "payment_intent.succeeded": {
         const pi = event.data.object;
-        const userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
-        const plan   = pi.metadata?.plan;
-        const months = pi.metadata?.months ? parseInt(pi.metadata.months) : null;
+        if (pi.metadata?.payment_type !== 'twint') break;
 
-        if (userId && plan && months && pi.metadata?.payment_type === "twint") {
+        const userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
+        const planId = pi.metadata?.plan_id;
+        const DUR_WH = { month: 1, quarter: 3, year: 12 };
+        const months = planId ? DUR_WH[planId] : null;
+
+        if (userId && planId && months) {
           const exp = new Date();
           exp.setMonth(exp.getMonth() + months);
-          await sql`UPDATE users SET subscribed = true, plan = ${plan}, sub_expires_at = ${exp} WHERE id = ${userId}`;
+          await sql`UPDATE users SET subscribed = true, plan = ${planId}, sub_expires_at = ${exp} WHERE id = ${userId}`;
 
           const existing = await sql`SELECT id FROM payments WHERE stripe_payment_id = ${pi.id}`;
           if (!existing.length) {
-            await sql`INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status) VALUES (${userId}, ${plan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')`;
+            await sql`INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status) VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')`;
           }
 
           // Parrainage TWINT

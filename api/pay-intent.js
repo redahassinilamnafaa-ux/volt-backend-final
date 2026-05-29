@@ -40,13 +40,20 @@ module.exports = async function handler(req, res) {
 
     // ── TWINT : PaymentIntent one-time ────────────────────────────────
     if (method === 'twint') {
+      const DUR = { month: 1, quarter: 3, year: 12 };
       const price = await stripe.prices.retrieve(priceId);
       const paymentIntent = await stripe.paymentIntents.create({
         amount:   price.unit_amount,
         currency: price.currency,
         customer: customerId,
         payment_method_types: ['twint'],
-        metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
+        metadata: {
+          plan_id,
+          volt_user_id: String(u.id),
+          price_id: priceId,
+          payment_type: 'twint',
+          months: String(DUR[plan_id] || 1),
+        },
         ...(return_url ? { return_url } : {}),
       });
       return res.json({
