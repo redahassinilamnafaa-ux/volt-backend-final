@@ -191,6 +191,24 @@ module.exports = async function handler(req, res) {
   }
 
 
+  
+  // ── GET /api/user-update?action=check-promo ────────
+  if (req.method === "GET" && req.query.action === "check-promo") {
+    const code = req.query.code;
+    if (!code) return res.status(400).json({ error: "Code manquant." });
+    try {
+      const cleanCode = code.trim().toUpperCase();
+      const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${cleanCode} AND id != ${auth.id}`;
+      if (referrer) {
+        return res.json({ ok: true, message: "Code valide ! 1 mois offert." });
+      } else {
+        return res.status(404).json({ error: "Code invalide." });
+      }
+    } catch (e) {
+      return res.status(500).json({ error: "Erreur serveur." });
+    }
+  }
+
   // ── POST /api/user-update?action=claim-referral ────────
   if (req.method === "POST" && req.query.action === "claim-referral") {
     try {
