@@ -17,7 +17,7 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
-  const { plan_id, method, return_url } = req.body || {};
+  const { plan_id, method, return_url, promo_code } = req.body || {};
   const priceId = PRICE_IDS[plan_id];
   if (!priceId) return res.status(400).json({ error: "Plan invalide." });
 
@@ -25,6 +25,17 @@ module.exports = async function handler(req, res) {
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
     const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
+    
+    let isPromoValid = false;
+    if (promo_code) {
+      const cleanCode = promo_code.trim().toUpperCase();
+      const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${cleanCode} AND id != ${auth.id}`;
+      if (referrer) {
+        isPromoValid = true;
+      } else {
+        return res.status(400).json({ error: "Le code promo/parrainage est invalide." });
+      }
+    }
 
     let customerId = u.stripe_customer;
     if (!customerId) {
@@ -52,6 +63,7 @@ module.exports = async function handler(req, res) {
           price_id: priceId,
           payment_type: 'twint',
           months: String(DUR[plan_id] || 1),
+          promo_code: promo_code || '',
         },
         ...(return_url ? { return_url } : {}),
       });
@@ -69,7 +81,7 @@ module.exports = async function handler(req, res) {
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
       payment_method_types: ['card'],
-      metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
+      metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId, promo_code: promo_code || '' },
     });
 
     return res.json({
