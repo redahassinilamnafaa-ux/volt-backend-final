@@ -55,14 +55,18 @@ module.exports = async function handler(req, res) {
         WHERE s.user_id = ${auth.id}
         ORDER BY s.scanned_at DESC LIMIT 50
       `;
-      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const tz = "Europe/Zurich";
+      const now = new Date();
+      const todayStr = now.toLocaleDateString("fr-CH", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+      const yesterdayStr = new Date(now.getTime() - 86400000).toLocaleDateString("fr-CH", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
       const history = rows.map(s => {
         const d = new Date(s.scanned_at);
-        const isToday = d >= todayStart;
-        const isYest  = d >= new Date(todayStart - 86400000) && !isToday;
-        const hm = d.toLocaleTimeString("fr-CH", { hour: "2-digit", minute: "2-digit" });
+        const dayStr = d.toLocaleDateString("fr-CH", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+        const isToday = dayStr === todayStr;
+        const isYest  = dayStr === yesterdayStr;
+        const hm = d.toLocaleTimeString("fr-CH", { hour: "2-digit", minute: "2-digit", timeZone: tz });
         const timeStr = isToday ? `Auj. ${hm}` : isYest ? `Hier ${hm}`
-          : `${d.toLocaleDateString("fr-CH", { day: "numeric", month: "short" })} ${hm}`;
+          : `${d.toLocaleDateString("fr-CH", { day: "numeric", month: "short", timeZone: tz })} ${hm}`;
         return { gym: s.gym_name || "Fitness VOLT", time: timeStr, today: isToday };
       });
       return res.json({ history });
@@ -187,6 +191,67 @@ module.exports = async function handler(req, res) {
       return res.json({ ok: true });
     } catch (e) {
       return res.status(500).json({ error: "Erreur: " + e.message });
+    }
+  }
+
+
+  
+  // ── GET /api/user-update?action=check-promo ────────
+  if (req.method === "GET" && req.query.action === "check-promo") {
+    const code = req.query.code;
+    if (!code) return res.status(400).json({ error: "Code manquant." });
+    try {
+      const cleanCode = code.trim().toUpperCase();
+      const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${cleanCode} AND id != ${auth.id}`;
+      if (referrer) {
+        return res.json({ ok: true, message: "Code valide ! 1 mois offert." });
+      } else {
+        return res.status(404).json({ error: "Code invalide." });
+      }
+    } catch (e) {
+      return res.status(500).json({ error: "Erreur serveur." });
+    }
+  }
+
+  // ── POST /api/user-update?action=claim-referral ────────
+  if (req.method === "POST" && req.query.action === "claim-referral") {
+    try {
+      const [u] = await sql`SELECT free_months, sub_expires_at, stripe_customer FROM users WHERE id = ${auth.id}`;
+      if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
+      if (u.free_months <= 0) return res.status(400).json({ error: "Aucun mois gratuit disponible." });
+
+      let currentExp = u.sub_expires_at ? new Date(u.sub_expires_at) : new Date();
+      if (currentExp < new Date()) {
+        currentExp = new Date();
+      }
+      currentExp.setMonth(currentExp.getMonth() + 1);
+
+      if (u.stripe_customer) {
+        try {
+          const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+          const subs = await stripe.subscriptions.list({ customer: u.stripe_customer, status: 'active', limit: 1 });
+          if (subs.data.length > 0) {
+            const subId = subs.data[0].id;
+            const currentPeriodEnd = subs.data[0].current_period_end;
+            const newTrialEnd = currentPeriodEnd + (30 * 24 * 60 * 60);
+            await stripe.subscriptions.update(subId, { trial_end: newTrialEnd, proration_behavior: 'none' });
+            currentExp = new Date(newTrialEnd * 1000);
+          }
+        } catch (stripeErr) {
+          console.log("Avertissement Stripe (Paiement TWINT ou erreur):", stripeErr.message);
+        }
+      }
+
+      const [updatedUser] = await sql`
+        UPDATE users 
+        SET free_months = free_months - 1, sub_expires_at = ${currentExp}, subscribed = true
+        WHERE id = ${auth.id}
+        RETURNING free_months, sub_expires_at
+      `;
+
+      return res.json({ ok: true, free_months: updatedUser.free_months, sub_expires_at: updatedUser.sub_expires_at });
+    } catch (e) {
+      return res.status(500).json({ error: "Erreur serveur : " + e.message });
     }
   }
 
