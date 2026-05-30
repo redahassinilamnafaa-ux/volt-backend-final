@@ -26,7 +26,6 @@ module.exports = async function handler(req, res) {
     const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
-    // Créer ou récupérer le customer Stripe
     let customerId = u.stripe_customer;
     if (!customerId) {
       const customer = await stripe.customers.create({
@@ -38,15 +37,22 @@ module.exports = async function handler(req, res) {
       await sql`UPDATE users SET stripe_customer = ${customerId} WHERE id = ${u.id}`;
     }
 
-    // ── TWINT : PaymentIntent one-time ────────────────────────────────
+    // ── TWINT : PaymentIntent one-time
     if (method === 'twint') {
+      const DUR = { month: 1, quarter: 3, year: 12 };
       const price = await stripe.prices.retrieve(priceId);
       const paymentIntent = await stripe.paymentIntents.create({
         amount:   price.unit_amount,
         currency: price.currency,
         customer: customerId,
         payment_method_types: ['twint'],
-        metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
+        metadata: {
+          plan_id,
+          volt_user_id: String(u.id),
+          price_id: priceId,
+          payment_type: 'twint',
+          months: String(DUR[plan_id] || 1),
+        },
         ...(return_url ? { return_url } : {}),
       });
       return res.json({
@@ -59,7 +65,7 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // ── CARTE : SetupIntent → Subscription ───────────────────────────
+    // ── CARTE : SetupIntent → Subscription
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
       payment_method_types: ['card'],
