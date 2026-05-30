@@ -55,6 +55,16 @@ module.exports = async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
+  // ── subscribe (activer/désactiver manuellement) ────────
+  if (action === "subscribe" && req.method === "POST") {
+    const { user_id, subscribed, plan } = req.body||{};
+    if (!user_id) return res.status(400).json({ error:"user_id requis." });
+    try {
+      await sql`UPDATE users SET subscribed=${subscribed}, plan=${plan||'month'} WHERE id=${user_id}`;
+      return res.json({ ok:true });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
   // ── payments ───────────────────────────────────────────
   if (action === "payments") {
     try {
