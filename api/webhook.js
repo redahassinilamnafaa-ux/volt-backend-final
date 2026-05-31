@@ -1,17 +1,42 @@
 const sql    = require("../lib/db");
 const Stripe = require("stripe");
 
+function getRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", chunk => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).end();
 
-  const event = req.body;
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+  let event;
+  try {
+    const rawBody = await getRawBody(req);
+    const sig = req.headers["stripe-signature"];
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+    if (webhookSecret) {
+      event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+    } else {
+      console.error("[webhook] STRIPE_WEBHOOK_SECRET manquant — définir dans les variables Vercel");
+      event = JSON.parse(rawBody.toString());
+    }
+  } catch (err) {
+    console.error("[webhook] Signature invalide:", err.message);
+    return res.status(400).json({ error: "Webhook Error: " + err.message });
+  }
+
   if (!event || !event.type || !event.data) {
     return res.status(400).json({ error: "Format d'événement invalide." });
   }
-
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
   try {
     switch (event.type) {
@@ -24,18 +49,24 @@ module.exports = async function handler(req, res) {
         const plan = subscription.metadata?.plan;
         const amount = invoice.amount_paid / 100;
         const customerId = invoice.customer;
+
         if (plan) {
           await sql`UPDATE users SET subscribed = true, plan = ${plan}, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
         } else {
           await sql`UPDATE users SET subscribed = true, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
         }
-        if (invoice.billing_reason === 'subscription_cycle') {
+
+        // Enregistrer le paiement (premier paiement + renouvellements)
+        const isBillable = invoice.billing_reason === "subscription_cycle" ||
+                           invoice.billing_reason === "subscription_create";
+        if (isBillable && amount > 0) {
           const [usr] = await sql`SELECT id, plan FROM users WHERE stripe_customer = ${customerId}`;
           if (usr) {
-            const existing = await sql`SELECT id FROM payments WHERE stripe_payment_id = ${invoice.id}`;
-            if (!existing.length) {
-              await sql`INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status) VALUES (${usr.id}, ${usr.plan || 'unknown'}, ${amount}, ${invoice.id}, 'card', 'success')`;
-            }
+            await sql`
+              INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
+              VALUES (${usr.id}, ${usr.plan || plan || "unknown"}, ${amount}, ${invoice.id}, "card", "success")
+              ON CONFLICT (stripe_payment_id) DO NOTHING
+            `;
           }
         }
         break;
@@ -49,23 +80,27 @@ module.exports = async function handler(req, res) {
 
       case "payment_intent.succeeded": {
         const pi = event.data.object;
-        if (pi.metadata?.payment_type !== 'twint') break;
+        // Le paiement TWINT est traité dans pay-confirm.js (appelé côté client).
+        // Ce bloc gère uniquement la persistance en cas d'échec de pay-confirm.
+        if (pi.metadata?.payment_type !== "twint") break;
         const userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
         const planId = pi.metadata?.plan_id;
-        const DUR_WH = { month: 1, quarter: 3, year: 12 };
-        const months = planId ? DUR_WH[planId] : null;
-        if (userId && planId && months) {
-          const exp = new Date();
-          exp.setMonth(exp.getMonth() + months);
-          await sql`UPDATE users SET subscribed = true, plan = ${planId}, sub_expires_at = ${exp} WHERE id = ${userId}`;
-          const existing = await sql`SELECT id FROM payments WHERE stripe_payment_id = ${pi.id}`;
-          if (!existing.length) {
-            await sql`INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status) VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')`;
+        const DUR_DAYS = { month: 30, quarter: 90, year: 365 };
+        const days = planId ? DUR_DAYS[planId] : null;
+        if (userId && planId && days) {
+          // ON CONFLICT évite le double INSERT si pay-confirm.js a déjà traité
+          await sql`
+            INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
+            VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, "twint", "success")
+            ON CONFLICT (stripe_payment_id) DO NOTHING
+          `;
+          // Activer l'abonnement seulement si pas déjà fait par pay-confirm.js
+          const [u] = await sql`SELECT subscribed FROM users WHERE id = ${userId}`;
+          if (u && !u.subscribed) {
+            const exp = new Date(Date.now() + days * 86400000);
+            await sql`UPDATE users SET subscribed = true, plan = ${planId}, sub_expires_at = ${exp} WHERE id = ${userId}`;
           }
-          const [u] = await sql`SELECT referred_by FROM users WHERE id = ${userId}`;
-          if (u?.referred_by) {
-            await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u.referred_by}`;
-          }
+          // Note : le crédit referral TWINT est géré dans pay-confirm.js (évite le double crédit)
         }
         break;
       }
@@ -80,3 +115,5 @@ module.exports = async function handler(req, res) {
 
   return res.json({ received: true });
 };
+
+module.exports.config = { api: { bodyParser: false } };

@@ -17,7 +17,7 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
-  const { plan_id, method, return_url } = req.body || {};
+  const { plan_id, method, return_url, promo_code } = req.body || {};
   const priceId = PRICE_IDS[plan_id];
   if (!priceId) return res.status(400).json({ error: "Plan invalide." });
 

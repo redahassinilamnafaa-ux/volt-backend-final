@@ -60,7 +60,15 @@ module.exports = async function handler(req, res) {
     const { user_id, subscribed, plan } = req.body||{};
     if (!user_id) return res.status(400).json({ error:"user_id requis." });
     try {
-      await sql`UPDATE users SET subscribed=${subscribed}, plan=${plan||'month'} WHERE id=${user_id}`;
+      if (subscribed) {
+        const durMonths = { month:1, quarter:3, year:12 };
+        const months = durMonths[plan] || 1;
+        const now = new Date();
+        const exp = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + months, now.getUTCDate()));
+        await sql`UPDATE users SET subscribed=true, plan=${plan||'month'}, sub_expires_at=${exp} WHERE id=${user_id}`;
+      } else {
+        await sql`UPDATE users SET subscribed=false WHERE id=${user_id}`;
+      }
       return res.json({ ok:true });
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
@@ -99,9 +107,14 @@ module.exports = async function handler(req, res) {
 
   // ── gyms PUT (modifier) ────────────────────────────────
   if (action === "gyms" && req.method === "PUT") {
-    const { id, name, address, filiale, email, password } = req.body||{};
+    const { id, name, address, filiale, email, password, active } = req.body||{};
     if (!id) return res.status(400).json({ error:"id requis." });
     try {
+      // Toggle actif/inactif uniquement
+      if (name === undefined && active !== undefined) {
+        await sql`UPDATE gyms SET active=${active} WHERE id=${id}`;
+        return res.json({ ok:true });
+      }
       if (password) {
         const hash = await bcrypt.hash(password, 10);
         await sql`UPDATE gyms SET name=${name},address=${address||null},filiale=${filiale},email=${email.toLowerCase()},password=${hash} WHERE id=${id}`;

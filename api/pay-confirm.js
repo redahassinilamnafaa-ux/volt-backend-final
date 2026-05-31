@@ -31,8 +31,7 @@ module.exports = async function handler(req, res) {
       const months = DUR[pidPlan];
       if (!months) return res.status(400).json({ error: "Plan invalide." });
 
-      const exp = new Date();
-      exp.setMonth(exp.getMonth() + months);
+      const exp = new Date(Date.now() + months * 30 * 86400000);
 
       await sql`UPDATE users SET subscribed = true, plan = ${pidPlan}, sub_expires_at = ${exp} WHERE id = ${auth.id}`;
       await sql`
@@ -59,6 +58,11 @@ module.exports = async function handler(req, res) {
   try {
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+    // Vérifier que le customer_id appartient bien à cet utilisateur
+    if (u.stripe_customer && u.stripe_customer !== customer_id) {
+      return res.status(403).json({ error: "Paramètre invalide." });
+    }
+
     // Définir la carte comme méthode de paiement par défaut
     await stripe.customers.update(customer_id, {
       invoice_settings: { default_payment_method: payment_method_id },
@@ -83,9 +87,8 @@ module.exports = async function handler(req, res) {
 
     const subscription = await stripe.subscriptions.create(subParams);
 
-    // Calculer la date d'expiration
-    const exp = new Date();
-    exp.setMonth(exp.getMonth() + months);
+    // Utiliser la date de fin de période Stripe (fiable, évite le bug setMonth)
+    const exp = new Date(subscription.current_period_end * 1000);
 
     // Mettre à jour l'abonnement en base
     await sql`
@@ -102,6 +105,7 @@ module.exports = async function handler(req, res) {
       INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
       VALUES (${auth.id}, ${plan_id}, ${invoice?.amount_paid ? invoice.amount_paid/100 : 0},
               ${subscription.id}, 'card', 'success')
+      ON CONFLICT (stripe_payment_id) DO NOTHING
     `;
 
     // Credit referrer if promo_code was used
