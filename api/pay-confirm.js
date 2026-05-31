@@ -56,6 +56,9 @@ module.exports = async function handler(req, res) {
   if (!months) return res.status(400).json({ error: "Plan invalide." });
 
   try {
+    const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
+
     // Vérifier que le customer_id appartient bien à cet utilisateur
     if (u.stripe_customer && u.stripe_customer !== customer_id) {
       return res.status(403).json({ error: "Paramètre invalide." });
@@ -66,38 +69,22 @@ module.exports = async function handler(req, res) {
       invoice_settings: { default_payment_method: payment_method_id },
     });
 
-    // Créer l'abonnement récurrent
-    // Retrieve SetupIntent to check metadata for promo code
-    const setupIntent = await stripe.setupIntents.retrieve(setup_intent_id);
-    const refCode = setupIntent.metadata.promo_code;
-    
-    let subParams = {
-      customer:         customer_id,
-      items:            [{ price: price_id }],
+    const subscription = await stripe.subscriptions.create({
+      customer:               customer_id,
+      items:                  [{ price: price_id }],
       default_payment_method: payment_method_id,
-      metadata:         { volt_user_id: auth.id, plan: plan_id },
-      expand:           ['latest_invoice.payment_intent'],
-    };
-    
-    if (refCode) {
-      subParams.trial_period_days = 30; // Premier mois gratuit !
-    }
-
-    const subscription = await stripe.subscriptions.create(subParams);
+      metadata:               { volt_user_id: String(auth.id), plan: plan_id },
+      expand:                 ['latest_invoice.payment_intent'],
+    });
 
     // Utiliser la date de fin de période Stripe (fiable, évite le bug setMonth)
     const exp = new Date(subscription.current_period_end * 1000);
 
-    // Mettre à jour l'abonnement en base
     await sql`
-      UPDATE users
-      SET subscribed = true,
-          plan = ${plan_id},
-          sub_expires_at = ${exp}
+      UPDATE users SET subscribed = true, plan = ${plan_id}, sub_expires_at = ${exp}
       WHERE id = ${auth.id}
     `;
 
-    // Enregistrer le paiement
     const invoice = subscription.latest_invoice;
     await sql`
       INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
@@ -106,10 +93,9 @@ module.exports = async function handler(req, res) {
       ON CONFLICT (stripe_payment_id) DO NOTHING
     `;
 
-    // Credit referrer if promo_code was used
-    if (refCode) {
-       await sql`UPDATE users SET free_months = free_months + 1 WHERE referral_code = ${refCode}`;
-    }
+    // Crédit parrainage (same mechanism as TWINT)
+    if (u.referred_by)
+      await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u.referred_by}`;
 
     return res.json({ ok: true, subscription_id: subscription.id });
 

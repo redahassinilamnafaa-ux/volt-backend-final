@@ -50,9 +50,13 @@ module.exports = async function handler(req, res) {
       resolvedGymId = machine?.gym_id || null;
     }
 
-    // Vérifier que l'utilisateur appartient au gym de la machine
+    // Vérifier que l'utilisateur appartient à la même filiale que la machine
     if (resolvedGymId && u.gym_id && u.gym_id !== resolvedGymId) {
-      return res.json({ result: "DENIED", reason: "WRONG_GYM" });
+      const [gymMatch] = await sql`
+        SELECT 1 FROM gyms g1 JOIN gyms g2 ON g1.filiale = g2.filiale
+        WHERE g1.id = ${resolvedGymId} AND g2.id = ${u.gym_id}
+      `;
+      if (!gymMatch) return res.json({ result: "DENIED", reason: "WRONG_GYM" });
     }
 
     const exp = new Date(now.getTime() + CD * 1000);
