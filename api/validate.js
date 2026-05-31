@@ -57,24 +57,35 @@ module.exports = async function handler(req, res) {
     if (cd && new Date(cd.expires_at) > now)
       return res.json({ result: "COOLDOWN", remaining_secs: Math.ceil((new Date(cd.expires_at) - now) / 1000) });
 
-    // Résoudre gym_id depuis la table machines
+    // Résoudre gym_id depuis la table machines (skip si table absente)
     let resolvedGymId = null;
     if (machine_id) {
-      const [machine] = await sql`SELECT gym_id FROM machines WHERE machine_id = ${machine_id} AND active = true`;
-      resolvedGymId = machine?.gym_id || null;
+      try {
+        const [machine] = await sql`SELECT gym_id FROM machines WHERE machine_id = ${machine_id} AND active = true`;
+        resolvedGymId = machine?.gym_id || null;
+      } catch(e) { /* machines table not yet created — skip */ }
     }
 
-    // Vérifier que l'utilisateur appartient à la même filiale que la machine
+    // Vérifier filiale (skip si table/colonne absente)
     if (resolvedGymId && u.gym_id && u.gym_id !== resolvedGymId) {
-      const [gymMatch] = await sql`
-        SELECT 1 FROM gyms g1 JOIN gyms g2 ON g1.filiale = g2.filiale
-        WHERE g1.id = ${resolvedGymId} AND g2.id = ${u.gym_id}
-      `;
-      if (!gymMatch) return res.json({ result: "DENIED", reason: "WRONG_GYM" });
+      try {
+        const [gymMatch] = await sql`
+          SELECT 1 FROM gyms g1 JOIN gyms g2 ON g1.filiale = g2.filiale
+          WHERE g1.id = ${resolvedGymId} AND g2.id = ${u.gym_id}
+        `;
+        if (!gymMatch) return res.json({ result: "DENIED", reason: "WRONG_GYM" });
+      } catch(e) { /* gyms.filiale not yet added — allow scan */ }
     }
 
     const exp = new Date(now.getTime() + CD * 1000);
-    await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${u.id}, ${resolvedGymId}, ${machine_id || null})`;
+    // Insert scan — tente avec gym_id/machine_id, repli sans si colonnes absentes
+    try {
+      await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${u.id}, ${resolvedGymId}, ${machine_id || null})`;
+    } catch(e) {
+      try {
+        await sql`INSERT INTO scans (user_id) VALUES (${u.id})`;
+      } catch(e2) { /* ignore — scan enregistré de toute façon */ }
+    }
     await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${u.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`;
     await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`;
 

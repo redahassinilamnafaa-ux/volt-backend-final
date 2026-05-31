@@ -146,22 +146,35 @@ module.exports = async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
-  // ── machines: create table ────────────────────────────
+  // ── db-setup : migrations complètes ──────────────────
   if (action === "db-setup" && req.method === "POST") {
-    try {
-      await sql`
-        CREATE TABLE IF NOT EXISTS machines (
-          id         SERIAL PRIMARY KEY,
-          machine_id VARCHAR(100) UNIQUE NOT NULL,
-          name       VARCHAR(255) NOT NULL,
-          gym_id     INTEGER REFERENCES gyms(id) ON DELETE SET NULL,
-          secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
-          active     BOOLEAN DEFAULT true,
-          created_at TIMESTAMP DEFAULT NOW()
-        )
-      `;
-      return res.json({ ok:true, message:"Table machines OK." });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    const steps = [];
+    const run = async (label, query) => {
+      try { await query; steps.push({ ok: true, step: label }); }
+      catch(e) { steps.push({ ok: false, step: label, error: e.message }); }
+    };
+    // Table machines
+    await run("create machines", sql`
+      CREATE TABLE IF NOT EXISTS machines (
+        id         SERIAL PRIMARY KEY,
+        machine_id VARCHAR(100) UNIQUE NOT NULL,
+        name       VARCHAR(255) NOT NULL,
+        gym_id     INTEGER REFERENCES gyms(id) ON DELETE SET NULL,
+        secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
+        active     BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    // Colonnes gyms
+    await run("gyms.filiale", sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS filiale VARCHAR(100)`);
+    // Colonnes users
+    await run("users.gym_id", sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS gym_id INTEGER REFERENCES gyms(id) ON DELETE SET NULL`);
+    await run("users.authorized", sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT true`);
+    // Colonnes scans
+    await run("scans.gym_id", sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER REFERENCES gyms(id) ON DELETE SET NULL`);
+    await run("scans.machine_id", sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
+    const allOk = steps.every(s => s.ok);
+    return res.json({ ok: allOk, steps });
   }
 
   // ── machines GET ───────────────────────────────────────
