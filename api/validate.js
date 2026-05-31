@@ -50,6 +50,11 @@ module.exports = async function handler(req, res) {
       resolvedGymId = machine?.gym_id || null;
     }
 
+    // Vérifier que l'utilisateur appartient au gym de la machine
+    if (resolvedGymId && u.gym_id && u.gym_id !== resolvedGymId) {
+      return res.json({ result: "DENIED", reason: "WRONG_GYM" });
+    }
+
     const exp = new Date(now.getTime() + CD * 1000);
     await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${u.id}, ${resolvedGymId}, ${machine_id || null})`;
     await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${u.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`;
