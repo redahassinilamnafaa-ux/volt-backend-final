@@ -1,6 +1,7 @@
 const cors   = require("../lib/cors");
 const sql    = require("../lib/db");
 const bcrypt = require("bcryptjs");
+const { Resend } = require("resend");
 
 const SECRET = process.env.ADMIN_SECRET || "volt-admin-secret-2025";
 
@@ -214,6 +215,31 @@ module.exports = async function handler(req, res) {
     try {
       await sql`DELETE FROM machines WHERE id=${id}`;
       return res.json({ ok:true });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── cron-notify : email J-7 expiration ───────────────
+  if (action === "cron-notify" && req.method === "GET") {
+    const cronAuth = req.headers.authorization;
+    if (process.env.CRON_SECRET && cronAuth !== `Bearer ${process.env.CRON_SECRET}`)
+      return res.status(401).json({ error: "Unauthorized" });
+    try {
+      const rows = await sql`
+        SELECT id, first_name, email, sub_expires_at FROM users
+        WHERE subscribed = true AND sub_expires_at IS NOT NULL
+          AND sub_expires_at > NOW() + INTERVAL '6 days'
+          AND sub_expires_at <= NOW() + INTERVAL '7 days'
+      `;
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      let sent = 0;
+      for (const u of rows) {
+        const expDate = new Date(u.sub_expires_at).toLocaleDateString("fr-CH", { timeZone:"Europe/Zurich", day:"numeric", month:"long", year:"numeric" });
+        try {
+          await resend.emails.send({ from:"VOLT. <noreply@volt-energy.ch>", to:u.email, subject:"⚠️ Ton abonnement VOLT. expire dans 7 jours", html:`<div style="background:#040c22;padding:32px 16px;font-family:Arial,sans-serif"><div style="max-width:460px;margin:0 auto"><div style="background:#071433;border-radius:18px;overflow:hidden"><div style="background:#071433;padding:32px 32px 22px;border-bottom:1px solid rgba(0,87,255,.14)"><div style="font-size:50px;font-weight:900;color:#fff;letter-spacing:-5px;line-height:1;font-family:Arial Black,Arial,sans-serif">VOLT.</div><div style="width:30px;height:3px;background:#FF9500;margin-top:12px;border-radius:2px"></div></div><div style="padding:28px 32px 22px"><div style="font-size:20px;font-weight:800;color:#fff;margin-bottom:10px">Ton abonnement expire bientôt ⚠️</div><div style="font-size:14px;color:rgba(255,255,255,.55);line-height:1.8;margin-bottom:24px">Salut <strong style="color:#fff">${u.first_name}</strong>,<br/>Ton abonnement expire le <strong style="color:#fff">${expDate}</strong> (dans <strong style="color:#FF9500">7 jours</strong>).</div><a href="https://volt-energy.ch/VoltApp.html" style="display:block;background:#0057FF;color:#fff;text-align:center;padding:15px 20px;border-radius:12px;font-size:15px;font-weight:900;text-decoration:none">RENOUVELER →</a></div><div style="padding:14px 32px;border-top:1px solid rgba(255,255,255,.05)"><div style="font-size:11px;color:rgba(255,255,255,.18)">VOLT. · Crissier · Switzerland</div></div></div></div></div>` });
+          sent++;
+        } catch(emailErr) { console.error(`cron-notify ${u.email}:`, emailErr); }
+      }
+      return res.json({ ok:true, sent, total:rows.length });
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 

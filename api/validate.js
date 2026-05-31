@@ -3,13 +3,28 @@ const sql    = require("../lib/db");
 
 const CD = 15 * 60; // cooldown 15 min en secondes
 
+// Version de l'APK CM30 — mettre à jour à chaque nouvelle release
+const APP_VERSION = {
+  version_code: 3,
+  version_name: "1.2.0",
+  apk_url: "",
+  release_notes: "Version initiale"
+};
+
 module.exports = async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).end();
 
-  if (req.headers["x-machine-secret"] !== process.env.MACHINE_SECRET)
+  const machineSecret = req.headers["x-machine-secret"];
+  if (machineSecret !== process.env.MACHINE_SECRET)
     return res.status(401).json({ result: "DENIED", reason: "SECRET_INVALID" });
+
+  // ── GET /api/validate?action=version — vérification version APK ──
+  if (req.method === "GET") {
+    return res.json(APP_VERSION);
+  }
+
+  if (req.method !== "POST") return res.status(405).end();
 
   const { qr_token, machine_id } = req.body || {};
   if (!qr_token)
@@ -32,7 +47,6 @@ module.exports = async function handler(req, res) {
     if (!u.subscribed) return res.json({ result: "DENIED", reason: "NOT_SUBSCRIBED" });
     if (!u.authorized) return res.json({ result: "DENIED", reason: "BLOCKED_BY_GYM" });
 
-    // Vérifier si l'abonnement a expiré et mettre à jour le statut en DB
     if (u.sub_expires_at && new Date(u.sub_expires_at) < new Date()) {
       sql`UPDATE users SET subscribed = false WHERE id = ${u.id}`.catch(() => {});
       return res.json({ result: "DENIED", reason: "SUB_EXPIRED" });
@@ -43,7 +57,7 @@ module.exports = async function handler(req, res) {
     if (cd && new Date(cd.expires_at) > now)
       return res.json({ result: "COOLDOWN", remaining_secs: Math.ceil((new Date(cd.expires_at) - now) / 1000) });
 
-    // Résoudre gym_id depuis la table machines si disponible
+    // Résoudre gym_id depuis la table machines
     let resolvedGymId = null;
     if (machine_id) {
       const [machine] = await sql`SELECT gym_id FROM machines WHERE machine_id = ${machine_id} AND active = true`;
@@ -62,7 +76,6 @@ module.exports = async function handler(req, res) {
     const exp = new Date(now.getTime() + CD * 1000);
     await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${u.id}, ${resolvedGymId}, ${machine_id || null})`;
     await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${u.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`;
-
     await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`;
 
     return res.json({ result: "APPROVED", user_name: `${u.first_name} ${u.last_name}`, plan: u.plan });
