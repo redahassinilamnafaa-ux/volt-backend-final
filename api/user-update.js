@@ -31,7 +31,7 @@ module.exports = async function handler(req, res) {
         user: {
           id: u.id, name: `${u.first_name} ${u.last_name}`,
           email: u.email, phone: u.phone,
-          initials: (u.first_name[0] + u.last_name[0]).toUpperCase(),
+          initials: ((u.first_name||'?')[0] + (u.last_name||'?')[0]).toUpperCase(),
           plan: u.plan, subscribed: u.subscribed, authorized: u.authorized,
           gym: u.gym_name || null, gym_id: u.gym_id,
           referral_code: u.referral_code,

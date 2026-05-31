@@ -33,12 +33,14 @@ module.exports = async function handler(req, res) {
   // ── STATS du fitness ───────────────────────────────────
   if (action === "stats") {
     try {
-      const [members]   = await sql`SELECT COUNT(*) as n FROM users WHERE gym_id=${gym_id} AND subscribed=true`;
-      const [total]     = await sql`SELECT COUNT(*) as n FROM users WHERE gym_id=${gym_id}`;
-      const [scansM]    = await sql`SELECT COUNT(*) as n FROM scans s JOIN users u ON s.user_id=u.id WHERE u.gym_id=${gym_id} AND s.scanned_at>NOW()-INTERVAL '30 days'`;
-      const [scansT]    = await sql`SELECT COUNT(*) as n FROM scans s JOIN users u ON s.user_id=u.id WHERE u.gym_id=${gym_id}`;
-      const [revM]      = await sql`SELECT COALESCE(SUM(p.amount_chf),0) as n FROM payments p JOIN users u ON p.user_id=u.id WHERE u.gym_id=${gym_id} AND p.status='success' AND p.created_at>NOW()-INTERVAL '30 days'`;
-      const [revT]      = await sql`SELECT COALESCE(SUM(p.amount_chf),0) as n FROM payments p JOIN users u ON p.user_id=u.id WHERE u.gym_id=${gym_id} AND p.status='success'`;
+      const [[members],[total],[scansM],[scansT],[revM],[revT]] = await Promise.all([
+        sql`SELECT COUNT(*) as n FROM users WHERE gym_id=${gym_id} AND subscribed=true`,
+        sql`SELECT COUNT(*) as n FROM users WHERE gym_id=${gym_id}`,
+        sql`SELECT COUNT(*) as n FROM scans s JOIN users u ON s.user_id=u.id WHERE u.gym_id=${gym_id} AND s.scanned_at>NOW()-INTERVAL '30 days'`,
+        sql`SELECT COUNT(*) as n FROM scans s JOIN users u ON s.user_id=u.id WHERE u.gym_id=${gym_id}`,
+        sql`SELECT COALESCE(SUM(p.amount_chf),0) as n FROM payments p JOIN users u ON p.user_id=u.id WHERE u.gym_id=${gym_id} AND p.status='success' AND p.created_at>NOW()-INTERVAL '30 days'`,
+        sql`SELECT COALESCE(SUM(p.amount_chf),0) as n FROM payments p JOIN users u ON p.user_id=u.id WHERE u.gym_id=${gym_id} AND p.status='success'`,
+      ]);
       return res.json({
         members_active: parseInt(members.n) || 0,
         members_total:  parseInt(total.n)   || 0,
@@ -65,7 +67,7 @@ module.exports = async function handler(req, res) {
       return res.json({ members: rows.map(m => ({
         id: m.id,
         name: m.first_name + ' ' + m.last_name,
-        initials: (m.first_name[0] + m.last_name[0]).toUpperCase(),
+        initials: ((m.first_name||'?')[0] + (m.last_name||'?')[0]).toUpperCase(),
         email: m.email,
         plan: m.plan,
         subscribed: m.subscribed,

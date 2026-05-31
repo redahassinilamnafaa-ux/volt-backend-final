@@ -2,6 +2,7 @@ const cors = require("../lib/cors");
 const sql = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
 const Stripe = require("stripe");
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 module.exports = async function handler(req, res) {
   cors(res);
@@ -12,8 +13,6 @@ module.exports = async function handler(req, res) {
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
   try {
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
     const [u] = await sql`SELECT stripe_customer FROM users WHERE id = ${auth.id}`;
     if (!u || !u.stripe_customer) {
       return res.status(404).json({ error: "Client Stripe introuvable pour ce compte." });

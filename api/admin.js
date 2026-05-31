@@ -141,7 +141,7 @@ module.exports = async function handler(req, res) {
         WHERE p.status='success' AND g.id IS NOT NULL
         GROUP BY g.id,g.name,DATE_TRUNC('month',p.created_at)
         ORDER BY month_date DESC,g.name`;
-      return res.json({ virements: rows.map((r,i)=>({ id:'v'+(i+1), gym_id:r.gym_id, gym_name:r.gym_name, month:r.month, brut:parseFloat(r.total), net:parseFloat(r.total), status:'pending', date_paid:null })) });
+      return res.json({ virements: rows.map(r=>({ id:`${r.gym_id}-${r.month_date}`, gym_id:r.gym_id, gym_name:r.gym_name, month:r.month, brut:parseFloat(r.total), net:parseFloat(r.total), status:'pending', date_paid:null })) });
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
