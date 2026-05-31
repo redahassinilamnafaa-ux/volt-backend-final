@@ -55,15 +55,22 @@ module.exports = async function handler(req, res) {
         WHERE s.user_id = ${auth.id}
         ORDER BY s.scanned_at DESC LIMIT 50
       `;
-      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const tz = "Europe/Zurich";
+      const now = new Date();
+      const todayStr  = now.toLocaleDateString("fr-CH", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+      const yesterdayStr = new Date(now - 86400000).toLocaleDateString("fr-CH", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+      const thisMonthStr  = now.toLocaleDateString("fr-CH", { timeZone: tz, year: "numeric", month: "2-digit" });
       const history = rows.map(s => {
         const d = new Date(s.scanned_at);
-        const isToday = d >= todayStart;
-        const isYest  = d >= new Date(todayStart - 86400000) && !isToday;
-        const hm = d.toLocaleTimeString("fr-CH", { hour: "2-digit", minute: "2-digit" });
+        const dayStr   = d.toLocaleDateString("fr-CH", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+        const monthStr = d.toLocaleDateString("fr-CH", { timeZone: tz, year: "numeric", month: "2-digit" });
+        const isToday = dayStr === todayStr;
+        const isYest  = dayStr === yesterdayStr;
+        const isMonth = monthStr === thisMonthStr;
+        const hm = d.toLocaleTimeString("fr-CH", { hour: "2-digit", minute: "2-digit", timeZone: tz });
         const timeStr = isToday ? `Auj. ${hm}` : isYest ? `Hier ${hm}`
-          : `${d.toLocaleDateString("fr-CH", { day: "numeric", month: "short" })} ${hm}`;
-        return { gym: s.gym_name || "Fitness VOLT", time: timeStr, today: isToday };
+          : `${d.toLocaleDateString("fr-CH", { day: "numeric", month: "short", timeZone: tz })} ${hm}`;
+        return { gym: s.gym_name || "Fitness VOLT", time: timeStr, today: isToday, month: isMonth };
       });
       return res.json({ history });
     } catch (e) {

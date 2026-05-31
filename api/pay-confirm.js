@@ -2,6 +2,7 @@ const cors            = require("../lib/cors");
 const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
 const Stripe          = require("stripe");
+const stripe          = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const DUR = { month: 1, quarter: 3, year: 12 };
 
@@ -20,7 +21,6 @@ module.exports = async function handler(req, res) {
   if (method === 'twint') {
     if (!payment_intent_id) return res.status(400).json({ error: "payment_intent_id manquant." });
     try {
-      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
       const pi = await stripe.paymentIntents.retrieve(payment_intent_id);
       if (pi.status !== 'succeeded') return res.status(400).json({ error: "Paiement non confirmé." });
 
@@ -56,8 +56,6 @@ module.exports = async function handler(req, res) {
   if (!months) return res.status(400).json({ error: "Plan invalide." });
 
   try {
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
     // Vérifier que le customer_id appartient bien à cet utilisateur
     if (u.stripe_customer && u.stripe_customer !== customer_id) {
       return res.status(403).json({ error: "Paramètre invalide." });

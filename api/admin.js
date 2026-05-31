@@ -22,12 +22,14 @@ module.exports = async function handler(req, res) {
   // ── stats ──────────────────────────────────────────────
   if (action === "stats") {
     try {
-      const [subs]  = await sql`SELECT COUNT(*) as n FROM users WHERE subscribed=true`;
-      const [users] = await sql`SELECT COUNT(*) as n FROM users`;
-      const [gyms]  = await sql`SELECT COUNT(*) as n FROM gyms`;
-      const [scans] = await sql`SELECT COUNT(*) as n FROM scans WHERE scanned_at>NOW()-INTERVAL '30 days'`;
-      const [rm]    = await sql`SELECT COALESCE(SUM(amount_chf),0) as n FROM payments WHERE status='success' AND created_at>NOW()-INTERVAL '30 days'`;
-      const [rt]    = await sql`SELECT COALESCE(SUM(amount_chf),0) as n FROM payments WHERE status='success'`;
+      const [[subs],[users],[gyms],[scans],[rm],[rt]] = await Promise.all([
+        sql`SELECT COUNT(*) as n FROM users WHERE subscribed=true`,
+        sql`SELECT COUNT(*) as n FROM users`,
+        sql`SELECT COUNT(*) as n FROM gyms`,
+        sql`SELECT COUNT(*) as n FROM scans WHERE scanned_at>NOW()-INTERVAL '30 days'`,
+        sql`SELECT COALESCE(SUM(amount_chf),0) as n FROM payments WHERE status='success' AND created_at>NOW()-INTERVAL '30 days'`,
+        sql`SELECT COALESCE(SUM(amount_chf),0) as n FROM payments WHERE status='success'`,
+      ]);
       return res.json({ subscribers:parseInt(subs.n), total_users:parseInt(users.n), total_gyms:parseInt(gyms.n), scans_month:parseInt(scans.n), rev_month:parseFloat(rm.n), rev_total:parseFloat(rt.n) });
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }

@@ -2,6 +2,7 @@ const cors            = require("../lib/cors");
 const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
 const Stripe          = require("stripe");
+const stripe          = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const PRICE_IDS = {
   month:   process.env.STRIPE_PRICE_MONTH,
@@ -22,7 +23,6 @@ module.exports = async function handler(req, res) {
   if (!priceId) return res.status(400).json({ error: "Plan invalide." });
 
   try {
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
     const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
     
