@@ -21,6 +21,16 @@ module.exports = async function handler(req, res) {
     if (!u.email_verified)
       return res.status(403).json({ error: "Vérifie ton email avant de générer un QR code.", code: "EMAIL_NOT_VERIFIED" });
 
+    // Return cooldown without generating a new token
+    const now = new Date();
+    try {
+      const [cd] = await sql`SELECT expires_at FROM cooldowns WHERE user_id = ${auth.id}`;
+      if (cd && new Date(cd.expires_at) > now) {
+        const remaining = Math.ceil((new Date(cd.expires_at) - now) / 1000);
+        return res.json({ cooldown_remaining: remaining });
+      }
+    } catch(e) { /* cooldowns table may not exist yet */ }
+
     await sql`DELETE FROM qr_tokens WHERE user_id = ${String(auth.id)}`;
 
     const token = crypto.randomBytes(24).toString("hex");
