@@ -11,7 +11,7 @@ module.exports = async function handler(req, res) {
   if (req.headers["x-machine-secret"] !== process.env.MACHINE_SECRET)
     return res.status(401).json({ result: "DENIED", reason: "SECRET_INVALID" });
 
-  const { qr_token, machine_id, gym_id } = req.body || {};
+  const { qr_token, machine_id } = req.body || {};
   if (!qr_token)
     return res.status(400).json({ result: "DENIED", reason: "NO_QR_TOKEN" });
 
@@ -43,8 +43,15 @@ module.exports = async function handler(req, res) {
     if (cd && new Date(cd.expires_at) > now)
       return res.json({ result: "COOLDOWN", remaining_secs: Math.ceil((new Date(cd.expires_at) - now) / 1000) });
 
+    // Résoudre gym_id depuis la table machines si disponible
+    let resolvedGymId = null;
+    if (machine_id) {
+      const [machine] = await sql`SELECT gym_id FROM machines WHERE machine_id = ${machine_id} AND active = true`;
+      resolvedGymId = machine?.gym_id || null;
+    }
+
     const exp = new Date(now.getTime() + CD * 1000);
-    await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${u.id}, ${gym_id || null}, ${machine_id || null})`;
+    await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${u.id}, ${resolvedGymId}, ${machine_id || null})`;
     await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${u.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`;
 
     await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`;

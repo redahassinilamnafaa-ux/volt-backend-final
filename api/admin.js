@@ -130,5 +130,77 @@ module.exports = async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
+  // ── machines: create table ────────────────────────────
+  if (action === "db-setup" && req.method === "POST") {
+    try {
+      await sql`
+        CREATE TABLE IF NOT EXISTS machines (
+          id         SERIAL PRIMARY KEY,
+          machine_id VARCHAR(100) UNIQUE NOT NULL,
+          name       VARCHAR(255) NOT NULL,
+          gym_id     INTEGER REFERENCES gyms(id) ON DELETE SET NULL,
+          secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
+          active     BOOLEAN DEFAULT true,
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `;
+      return res.json({ ok:true, message:"Table machines OK." });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── machines GET ───────────────────────────────────────
+  if (action === "machines" && req.method === "GET") {
+    try {
+      const rows = await sql`
+        SELECT m.id, m.machine_id, m.name, m.gym_id, m.secret, m.active,
+               g.name as gym_name, g.filiale as gym_filiale
+        FROM machines m
+        LEFT JOIN gyms g ON m.gym_id = g.id
+        ORDER BY m.created_at DESC`;
+      return res.json({ machines: rows.map(m=>({
+        id: m.id, machine_id: m.machine_id, name: m.name,
+        gym_id: m.gym_id, gym_name: m.gym_name || null,
+        secret: m.secret, active: m.active
+      })) });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── machines POST (créer) ──────────────────────────────
+  if (action === "machines" && req.method === "POST") {
+    const { machine_id, name, gym_id, secret } = req.body||{};
+    if (!machine_id||!name) return res.status(400).json({ error:"machine_id et name requis." });
+    try {
+      const [m] = await sql`
+        INSERT INTO machines (machine_id, name, gym_id, secret)
+        VALUES (${machine_id}, ${name}, ${gym_id||null}, ${secret||process.env.MACHINE_SECRET||'volt-admin-secret-2025'})
+        RETURNING id, machine_id, name, gym_id, secret`;
+      return res.status(201).json({ ok:true, machine:m });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── machines PUT (modifier / toggle) ──────────────────
+  if (action === "machines" && req.method === "PUT") {
+    const { id, machine_id, name, gym_id, secret, active } = req.body||{};
+    if (!id) return res.status(400).json({ error:"id requis." });
+    try {
+      if (machine_id === undefined && name === undefined && active !== undefined) {
+        await sql`UPDATE machines SET active=${active} WHERE id=${id}`;
+      } else {
+        await sql`UPDATE machines SET machine_id=${machine_id}, name=${name}, gym_id=${gym_id||null}, secret=${secret} WHERE id=${id}`;
+      }
+      return res.json({ ok:true });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── machines DELETE ────────────────────────────────────
+  if (action === "machines" && req.method === "DELETE") {
+    const { id } = req.body||{};
+    if (!id) return res.status(400).json({ error:"id requis." });
+    try {
+      await sql`DELETE FROM machines WHERE id=${id}`;
+      return res.json({ ok:true });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
   return res.status(400).json({ error:"Action inconnue." });
 };
