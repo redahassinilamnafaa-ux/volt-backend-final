@@ -28,13 +28,8 @@ module.exports = async function handler(req, res) {
       if (String(pi.metadata.volt_user_id) !== String(auth.id))
         return res.status(403).json({ error: "Non autorisé." });
 
-      let months = DUR[pidPlan];
+      const months = DUR[pidPlan];
       if (!months) return res.status(400).json({ error: "Plan invalide." });
-      
-      let refCode = pi.metadata.promo_code;
-      if (refCode) {
-        months += 1; // +1 mois offert pour le nouvel utilisateur !
-      }
 
       const exp = new Date();
       exp.setMonth(exp.getMonth() + months);
@@ -45,10 +40,9 @@ module.exports = async function handler(req, res) {
         VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
         ON CONFLICT (stripe_payment_id) DO NOTHING
       `;
-      // Credit referrer if promo_code was used
-      if (refCode) {
-         await sql`UPDATE users SET free_months = free_months + 1 WHERE referral_code = ${refCode}`;
-      }
+      const [u2] = await sql`SELECT referred_by FROM users WHERE id = ${auth.id}`;
+      if (u2?.referred_by)
+        await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u2.referred_by}`;
 
       return res.json({ ok: true });
     } catch(e) {

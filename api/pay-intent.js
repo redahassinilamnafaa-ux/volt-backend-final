@@ -17,7 +17,7 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
-  const { plan_id, method, return_url, promo_code } = req.body || {};
+  const { plan_id, method, return_url } = req.body || {};
   const priceId = PRICE_IDS[plan_id];
   if (!priceId) return res.status(400).json({ error: "Plan invalide." });
 
@@ -48,23 +48,15 @@ module.exports = async function handler(req, res) {
       await sql`UPDATE users SET stripe_customer = ${customerId} WHERE id = ${u.id}`;
     }
 
-    // ── TWINT : PaymentIntent one-time
+    // ── TWINT : PaymentIntent one-time ────────────────────────────────
     if (method === 'twint') {
-      const DUR = { month: 1, quarter: 3, year: 12 };
       const price = await stripe.prices.retrieve(priceId);
       const paymentIntent = await stripe.paymentIntents.create({
         amount:   price.unit_amount,
         currency: price.currency,
         customer: customerId,
         payment_method_types: ['twint'],
-        metadata: {
-          plan_id,
-          volt_user_id: String(u.id),
-          price_id: priceId,
-          payment_type: 'twint',
-          months: String(DUR[plan_id] || 1),
-          promo_code: promo_code || '',
-        },
+        metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
         ...(return_url ? { return_url } : {}),
       });
       return res.json({
@@ -77,11 +69,11 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // ── CARTE : SetupIntent → Subscription
+    // ── CARTE : SetupIntent → Subscription ───────────────────────────
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
       payment_method_types: ['card'],
-      metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId, promo_code: promo_code || '' },
+      metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
     });
 
     return res.json({
