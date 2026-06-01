@@ -177,12 +177,31 @@ module.exports = async function handler(req, res) {
     return res.json({ ok: allOk, steps });
   }
 
+  // ── ensure machines table exists ──────────────────────
+  const ensureMachinesTable = async () => {
+    await sql`
+      CREATE TABLE IF NOT EXISTS machines (
+        id         SERIAL PRIMARY KEY,
+        machine_id VARCHAR(100) UNIQUE NOT NULL,
+        name       VARCHAR(255) NOT NULL,
+        gym_id     INTEGER,
+        secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
+        active     BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `;
+    // Also ensure scans has machine_id column
+    await sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`.catch(()=>{});
+    await sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER`.catch(()=>{});
+  };
+
   // ── machines GET ───────────────────────────────────────
   if (action === "machines" && req.method === "GET") {
     try {
+      await ensureMachinesTable();
       const rows = await sql`
         SELECT m.id, m.machine_id, m.name, m.gym_id, m.secret, m.active,
-               g.name as gym_name, g.filiale as gym_filiale
+               g.name as gym_name
         FROM machines m
         LEFT JOIN gyms g ON m.gym_id = g.id
         ORDER BY m.created_at DESC`;
@@ -199,6 +218,7 @@ module.exports = async function handler(req, res) {
     const { machine_id, name, gym_id, secret } = req.body||{};
     if (!machine_id||!name) return res.status(400).json({ error:"machine_id et name requis." });
     try {
+      await ensureMachinesTable();
       const [m] = await sql`
         INSERT INTO machines (machine_id, name, gym_id, secret)
         VALUES (${machine_id}, ${name}, ${gym_id||null}, ${secret||process.env.MACHINE_SECRET||'volt-admin-secret-2025'})
