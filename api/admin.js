@@ -156,7 +156,7 @@ module.exports = async function handler(req, res) {
         )`;
     };
 
-    // GET — liste avec statut persisté
+    // GET — liste basée sur les PAIEMENTS des abonnés rattachés
     if (req.method === "GET") {
       try {
         await ensureVirementTable();
@@ -164,19 +164,23 @@ module.exports = async function handler(req, res) {
           SELECT g.id as gym_id, g.name as gym_name,
             TO_CHAR(DATE_TRUNC('month',p.created_at),'Mon. YYYY') as month,
             DATE_TRUNC('month',p.created_at) as month_date,
-            COALESCE(SUM(p.amount_chf),0) as total,
+            COALESCE(SUM(p.amount_chf),0) as total_amount,
+            COUNT(p.id) as total_payments,
             vs.status as vs_status, vs.date_paid as vs_date_paid
           FROM payments p
-          LEFT JOIN users u ON p.user_id=u.id
-          LEFT JOIN gyms g ON u.gym_id=g.id
-          LEFT JOIN virement_status vs ON vs.gym_id=g.id AND vs.month_date=DATE_TRUNC('month',p.created_at)
-          WHERE p.status='success' AND g.id IS NOT NULL
-          GROUP BY g.id,g.name,DATE_TRUNC('month',p.created_at),vs.status,vs.date_paid
-          ORDER BY month_date DESC,g.name`;
+          JOIN users u ON p.user_id = u.id
+          JOIN gyms g ON u.gym_id = g.id
+          LEFT JOIN virement_status vs ON vs.gym_id = g.id AND vs.month_date = DATE_TRUNC('month', p.created_at)
+          WHERE p.status = 'success'
+          GROUP BY g.id, g.name, DATE_TRUNC('month', p.created_at), vs.status, vs.date_paid
+          ORDER BY month_date DESC, g.name`;
+
         return res.json({ virements: rows.map(r=>({
           id:`${r.gym_id}-${new Date(r.month_date).toISOString().slice(0,10)}`,
           gym_id:r.gym_id, gym_name:r.gym_name, month:r.month,
-          brut:parseFloat(r.total), net:parseFloat(r.total),
+          count: parseInt(r.total_payments),
+          brut: parseFloat(r.total_amount),
+          net: parseFloat(r.total_amount), // On peut appliquer une commission ici si besoin
           status: r.vs_status || 'pending',
           date_paid: r.vs_date_paid ? new Date(r.vs_date_paid).toISOString() : null
         })) });
