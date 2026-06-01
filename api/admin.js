@@ -205,22 +205,29 @@ module.exports = async function handler(req, res) {
     await run("create machines", sql`
       CREATE TABLE IF NOT EXISTS machines (
         id         SERIAL PRIMARY KEY,
-        machine_id VARCHAR(100) UNIQUE NOT NULL,
-        name       VARCHAR(255) NOT NULL,
-        gym_id     INTEGER REFERENCES gyms(id) ON DELETE SET NULL,
+        machine_id VARCHAR(100),
+        name       VARCHAR(255),
+        gym_id     INTEGER,
         secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
         active     BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    // Colonnes machines (pour tables déjà créées sans certaines colonnes)
+    await run("machines.machine_id", sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
+    await run("machines.name",       sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS name VARCHAR(255)`);
+    await run("machines.gym_id",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
+    await run("machines.secret",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret VARCHAR(255) DEFAULT 'volt-admin-secret-2025'`);
+    await run("machines.active",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
     // Colonnes gyms
-    await run("gyms.filiale", sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS filiale VARCHAR(100)`);
+    await run("gyms.filiale",        sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS filiale VARCHAR(100)`);
+    await run("gyms.active",         sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
     // Colonnes users
-    await run("users.gym_id", sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS gym_id INTEGER REFERENCES gyms(id) ON DELETE SET NULL`);
-    await run("users.authorized", sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT true`);
+    await run("users.gym_id",        sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
+    await run("users.authorized",    sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT true`);
     // Colonnes scans
-    await run("scans.gym_id", sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER REFERENCES gyms(id) ON DELETE SET NULL`);
-    await run("scans.machine_id", sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
+    await run("scans.gym_id",        sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
+    await run("scans.machine_id",    sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
     const allOk = steps.every(s => s.ok);
     return res.json({ ok: allOk, steps });
   }
