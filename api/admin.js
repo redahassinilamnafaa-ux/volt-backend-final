@@ -230,15 +230,21 @@ module.exports = async function handler(req, res) {
     await sql`
       CREATE TABLE IF NOT EXISTS machines (
         id         SERIAL PRIMARY KEY,
-        machine_id VARCHAR(100) UNIQUE NOT NULL,
-        name       VARCHAR(255) NOT NULL,
+        machine_id VARCHAR(100),
+        name       VARCHAR(255),
         gym_id     INTEGER,
         secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
         active     BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `;
-    // Also ensure scans has machine_id column
+    // Ajouter les colonnes manquantes si la table existait déjà sans elles
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS name       VARCHAR(255)`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS gym_id     INTEGER`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret     VARCHAR(255) DEFAULT 'volt-admin-secret-2025'`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS active     BOOLEAN DEFAULT true`.catch(()=>{});
+    // Colonnes scans
     await sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`.catch(()=>{});
     await sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER`.catch(()=>{});
   };
