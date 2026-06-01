@@ -14,38 +14,34 @@ module.exports = async function handler(req, res) {
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
   try {
-    const [u] = await sql`
-      SELECT email_verified FROM users WHERE id = ${auth.id}
+    // 1 seule requête : user + cooldown en parallèle via LEFT JOIN
+    const [row] = await sql`
+      SELECT u.email_verified, cd.expires_at AS cd_expires
+      FROM users u
+      LEFT JOIN cooldowns cd ON cd.user_id = u.id
+      WHERE u.id = ${auth.id}
     `;
-    if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
-    if (!u.email_verified)
+    if (!row) return res.status(404).json({ error: "Utilisateur introuvable." });
+    if (!row.email_verified)
       return res.status(403).json({ error: "Vérifie ton email avant de générer un QR code.", code: "EMAIL_NOT_VERIFIED" });
 
-    // Return cooldown without generating a new token
     const now = new Date();
-    try {
-      const [cd] = await sql`SELECT expires_at FROM cooldowns WHERE user_id = ${auth.id}`;
-      if (cd && new Date(cd.expires_at) > now) {
-        const remaining = Math.ceil((new Date(cd.expires_at) - now) / 1000);
-        return res.json({ cooldown_remaining: remaining });
-      }
-    } catch(e) { /* cooldowns table may not exist yet */ }
+    if (row.cd_expires && new Date(row.cd_expires) > now) {
+      const remaining = Math.ceil((new Date(row.cd_expires) - now) / 1000);
+      return res.json({ cooldown_remaining: remaining });
+    }
 
-    await sql`DELETE FROM qr_tokens WHERE user_id = ${String(auth.id)}`;
-
-    const token = crypto.randomBytes(24).toString("hex");
+    const token  = crypto.randomBytes(24).toString("hex");
     const expiry = new Date(Date.now() + QR_TTL * 1000);
 
+    // DELETE + INSERT en 1 seul round-trip via CTE
     await sql`
+      WITH del AS (DELETE FROM qr_tokens WHERE user_id = ${String(auth.id)})
       INSERT INTO qr_tokens (user_id, token, expires_at)
       VALUES (${String(auth.id)}, ${token}, ${expiry})
     `;
 
-    return res.json({
-      token,
-      expires_at: expiry.toISOString(),
-      ttl: QR_TTL,
-    });
+    return res.json({ token, expires_at: expiry.toISOString(), ttl: QR_TTL });
 
   } catch (e) {
     console.error("qr-token error:", e);
