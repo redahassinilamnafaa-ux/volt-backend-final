@@ -77,19 +77,20 @@ module.exports = async function handler(req, res) {
       } catch(e) { /* gyms.filiale not yet added — allow scan */ }
     }
 
+    // ── Répondre APPROVED immédiatement pour éviter le timeout CM30 ──
+    res.json({ result: "APPROVED", user_name: `${u.first_name} ${u.last_name}`, plan: u.plan });
+
+    // ── Enregistrer scan + cooldown + supprimer token APRÈS la réponse ──
     const exp = new Date(now.getTime() + CD * 1000);
-    // Insert scan — tente avec gym_id/machine_id, repli sans si colonnes absentes
     try {
       await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${u.id}, ${resolvedGymId}, ${machine_id || null})`;
     } catch(e) {
       try {
         await sql`INSERT INTO scans (user_id) VALUES (${u.id})`;
-      } catch(e2) { /* ignore — scan enregistré de toute façon */ }
+      } catch(e2) {}
     }
-    await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${u.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`;
-    await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`;
-
-    return res.json({ result: "APPROVED", user_name: `${u.first_name} ${u.last_name}`, plan: u.plan });
+    await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${u.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`.catch(() => {});
+    await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`.catch(() => {});
 
   } catch (e) {
     console.error("validate error:", e);
