@@ -36,17 +36,30 @@ module.exports = async function handler(req, res) {
   }
 
   // ── clients ────────────────────────────────────────────
-  if (action === "clients") {
-    try {
-      const rows = await sql`
-        SELECT u.id,u.first_name,u.last_name,u.email,u.plan,u.subscribed,u.authorized,u.email_verified,u.created_at,
-          g.name as gym_name,
-          (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
-          (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p WHERE p.user_id=u.id AND p.status='success') as revenue
-        FROM users u LEFT JOIN gyms g ON u.gym_id=g.id ORDER BY u.created_at DESC`;
-      return res.json({ clients: rows.map(c=>({ id:c.id, name:c.first_name+' '+c.last_name, email:c.email, plan:c.plan, subscribed:c.subscribed, authorized:c.authorized, email_verified:c.email_verified, gym:c.gym_name||'—', scans:parseInt(c.scans)||0, revenue:parseFloat(c.revenue)||0, joined:new Date(c.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'}) })) });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
-  }
+    if (action === "clients") {
+      try {
+        const rows = await sql`
+          SELECT u.id,u.first_name,u.last_name,u.email,u.plan,u.subscribed,u.authorized,u.email_verified,u.created_at,
+            g.name as gym_name, g.filiale as gym_filiale,
+            (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
+            (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p WHERE p.user_id=u.id AND p.status='success') as revenue
+          FROM users u LEFT JOIN gyms g ON u.gym_id=g.id ORDER BY u.created_at DESC`;
+        return res.json({ clients: rows.map(c=>({
+          id:c.id,
+          name:c.first_name+' '+c.last_name,
+          email:c.email,
+          plan:c.plan,
+          subscribed:c.subscribed,
+          authorized:c.authorized,
+          email_verified:c.email_verified,
+          gym:c.gym_name||'—',
+          filiale:c.gym_filiale||'',
+          scans:parseInt(c.scans)||0,
+          revenue:parseFloat(c.revenue)||0,
+          joined:new Date(c.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'})
+        })) });
+      } catch(e) { return res.status(500).json({ error:e.message }); }
+    }
 
   // ── access (bloquer/débloquer un client) ───────────────
   if (action === "access" && req.method === "POST") {
@@ -201,7 +214,8 @@ module.exports = async function handler(req, res) {
       try { await query; steps.push({ ok: true, step: label }); }
       catch(e) { steps.push({ ok: false, step: label, error: e.message }); }
     };
-    // Table machines
+
+    // 1. Table machines
     await run("create machines", sql`
       CREATE TABLE IF NOT EXISTS machines (
         id         SERIAL PRIMARY KEY,
@@ -214,35 +228,33 @@ module.exports = async function handler(req, res) {
       )
     `);
 
-    // Correction séquentielle forcée (pour éviter l'erreur de null constraint sur ID)
-    await run("fix serial sequence", sql`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'machines_id_seq') THEN
-          CREATE SEQUENCE machines_id_seq;
-        END IF;
-        ALTER TABLE machines ALTER COLUMN id SET DEFAULT nextval('machines_id_seq');
-        IF (SELECT MAX(id) FROM machines) IS NOT NULL THEN
-          PERFORM setval('machines_id_seq', (SELECT MAX(id) FROM machines));
-        END IF;
-      END $$;
-    `);
+    // 2. Correction de la séquence (Auto-incrément) - Version robuste
+    await run("create sequence", sql`CREATE SEQUENCE IF NOT EXISTS machines_id_seq`);
+    await run("attach sequence", sql`ALTER TABLE machines ALTER COLUMN id SET DEFAULT nextval('machines_id_seq')`);
 
-    // Colonnes machines (pour tables déjà créées sans certaines colonnes)
+    // Synchroniser la valeur de la séquence avec les données existantes
+    try {
+      const res = await sql`SELECT MAX(id) as maxid FROM machines`;
+      const nextId = (res[0]?.maxid || 0) + 1;
+      await sql`SELECT setval('machines_id_seq', ${nextId}, false)`;
+      steps.push({ ok: true, step: "sync sequence" });
+    } catch(e) {
+      steps.push({ ok: false, step: "sync sequence", error: e.message });
+    }
+
+    // 3. Colonnes manquantes
     await run("machines.machine_id", sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
     await run("machines.name",       sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS name VARCHAR(255)`);
     await run("machines.gym_id",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
     await run("machines.secret",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret VARCHAR(255) DEFAULT 'volt-admin-secret-2025'`);
     await run("machines.active",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
-    // Colonnes gyms
     await run("gyms.filiale",        sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS filiale VARCHAR(100)`);
     await run("gyms.active",         sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
-    // Colonnes users
     await run("users.gym_id",        sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
     await run("users.authorized",    sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT true`);
-    // Colonnes scans
     await run("scans.gym_id",        sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
     await run("scans.machine_id",    sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
+
     const allOk = steps.every(s => s.ok);
     return res.json({ ok: allOk, steps });
   }

@@ -87,7 +87,28 @@ module.exports = async function handler(req, res) {
       return res.json({ result: "COOLDOWN", remaining_secs: secs });
     }
 
-    // ── 3. Écritures AVANT la réponse ──
+    // ── 3. Vérification de l'accès par Filiale ───────────────
+    // Si l'utilisateur n'est pas encore lié à un fitness, on le lie au fitness de cette machine (Auto-binding)
+    if (!row.gym_id && resolvedGymId) {
+      await sql`UPDATE users SET gym_id = ${resolvedGymId} WHERE id = ${row.id}`;
+      row.gym_id = resolvedGymId;
+      console.log(`AUTO-BIND: user ${row.id} linked to gym ${resolvedGymId}`);
+    }
+
+    // Si la machine est liée à un fitness, on vérifie que c'est la même filiale que l'utilisateur
+    if (resolvedGymId && row.gym_id) {
+      const [match] = await sql`
+        SELECT 1 FROM gyms g1, gyms g2
+        WHERE g1.id = ${resolvedGymId}
+        AND g2.id = ${row.gym_id}
+        AND (g1.filiale = g2.filiale OR g1.id = g2.id)
+      `;
+
+      if (!match) {
+        console.log(`DENIED WRONG_FILIALE: user_gym=${row.gym_id} machine_gym=${resolvedGymId}`);
+        return res.json({ result: "DENIED", reason: "WRONG_GYM" });
+      }
+    }
     const exp = new Date(now.getTime() + CD * 1000);
     try {
       await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${row.id}, ${resolvedGymId}, ${machine_id || null})`;
