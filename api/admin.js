@@ -213,6 +213,21 @@ module.exports = async function handler(req, res) {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+
+    // Correction séquentielle forcée (pour éviter l'erreur de null constraint sur ID)
+    await run("fix serial sequence", sql`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'machines_id_seq') THEN
+          CREATE SEQUENCE machines_id_seq;
+        END IF;
+        ALTER TABLE machines ALTER COLUMN id SET DEFAULT nextval('machines_id_seq');
+        IF (SELECT MAX(id) FROM machines) IS NOT NULL THEN
+          PERFORM setval('machines_id_seq', (SELECT MAX(id) FROM machines));
+        END IF;
+      END $$;
+    `);
+
     // Colonnes machines (pour tables déjà créées sans certaines colonnes)
     await run("machines.machine_id", sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
     await run("machines.name",       sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS name VARCHAR(255)`);
@@ -280,6 +295,7 @@ module.exports = async function handler(req, res) {
     if (!machine_id||!name) return res.status(400).json({ error:"machine_id et name requis." });
     try {
       await ensureMachinesTable();
+      // On laisse Postgres gérer l'ID automatiquement
       const [m] = await sql`
         INSERT INTO machines (machine_id, name, gym_id, secret)
         VALUES (${machine_id}, ${name}, ${gym_id||null}, ${secret||process.env.MACHINE_SECRET||'volt-admin-secret-2025'})

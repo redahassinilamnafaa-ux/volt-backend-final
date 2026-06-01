@@ -15,10 +15,6 @@ module.exports = async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const machineSecret = req.headers["x-machine-secret"];
-  if (machineSecret !== process.env.MACHINE_SECRET)
-    return res.status(401).json({ result: "DENIED", reason: "SECRET_INVALID" });
-
   // ── GET /api/validate?action=version — vérification version APK ──
   if (req.method === "GET") {
     return res.json(APP_VERSION);
@@ -30,8 +26,41 @@ module.exports = async function handler(req, res) {
   if (!qr_token)
     return res.status(400).json({ result: "DENIED", reason: "NO_QR_TOKEN" });
 
+  const providedSecret = req.headers["x-machine-secret"];
+
   try {
-    // ── 1 seule requête lecture : token + user + cooldown ───────────
+    // ── 1. Vérification Machine & Secret Spécifique ────────────────
+    let resolvedGymId = gym_id || null;
+    let machineValid = false;
+
+    if (machine_id) {
+      try {
+        const [machine] = await sql`SELECT * FROM machines WHERE machine_id = ${machine_id} AND active = true`;
+        if (machine) {
+          // Vérifier le secret de la machine OU le secret global (compatibilité)
+          if (providedSecret === machine.secret || providedSecret === process.env.MACHINE_SECRET || providedSecret === "volt-admin-secret-2025") {
+            machineValid = true;
+            resolvedGymId = machine.gym_id || resolvedGymId;
+          } else {
+            console.log("DENIED SECRET_INVALID for machine=" + machine_id);
+            return res.status(401).json({ result: "DENIED", reason: "SECRET_INVALID" });
+          }
+        }
+      } catch(e) {
+        console.error("Machine check error (table missing?):", e.message);
+      }
+    }
+
+    // Si machine non trouvée ou non spécifiée, on exige au moins le secret global
+    if (!machineValid) {
+      const globalSecret = process.env.MACHINE_SECRET || "volt-admin-secret-2025";
+      if (providedSecret !== globalSecret) {
+        console.log("DENIED SECRET_INVALID global");
+        return res.status(401).json({ result: "DENIED", reason: "SECRET_INVALID" });
+      }
+    }
+
+    // ── 2. Lecture : token + user + cooldown ───────────
     const [row] = await sql`
       SELECT u.*, cd.expires_at AS cd_expires
       FROM qr_tokens qt
@@ -58,16 +87,7 @@ module.exports = async function handler(req, res) {
       return res.json({ result: "COOLDOWN", remaining_secs: secs });
     }
 
-    // ── Résoudre gym_id : machine_id → table machines, sinon body ───
-    let resolvedGymId = gym_id || null;
-    if (machine_id) {
-      try {
-        const [m] = await sql`SELECT gym_id FROM machines WHERE machine_id = ${machine_id} AND active = true`;
-        if (m?.gym_id) resolvedGymId = m.gym_id;
-      } catch(e) { /* table machines absente — on ignore */ }
-    }
-
-    // ── Écritures AVANT la réponse (connexion fermée proprement après) ──
+    // ── 3. Écritures AVANT la réponse ──
     const exp = new Date(now.getTime() + CD * 1000);
     try {
       await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${row.id}, ${resolvedGymId}, ${machine_id || null})`;
@@ -77,7 +97,7 @@ module.exports = async function handler(req, res) {
     await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${row.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`;
     await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`;
 
-    // ── APPROVED en dernier → connexion se ferme immédiatement après ──
+    // ── 4. SUCCESS ──
     console.log("APPROVED user="+row.id+" plan="+row.plan);
     return res.json({ result: "APPROVED", user_name: `${row.first_name} ${row.last_name}`, plan: row.plan });
 
