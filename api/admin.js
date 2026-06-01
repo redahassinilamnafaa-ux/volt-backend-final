@@ -87,13 +87,14 @@ module.exports = async function handler(req, res) {
   // ── gyms GET ───────────────────────────────────────────
   if (action === "gyms" && req.method === "GET") {
     try {
+      await sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`.catch(()=>{});
       const rows = await sql`
         SELECT g.*,
           (SELECT COUNT(*) FROM users u WHERE u.gym_id=g.id AND u.subscribed=true) as members,
           (SELECT COUNT(*) FROM scans s LEFT JOIN users u ON s.user_id=u.id WHERE u.gym_id=g.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p LEFT JOIN users u ON p.user_id=u.id WHERE u.gym_id=g.id AND p.status='success' AND p.created_at>NOW()-INTERVAL '30 days') as revenue
         FROM gyms g ORDER BY g.created_at DESC`;
-      return res.json({ gyms: rows.map(g=>({ id:g.id, name:g.name, address:g.address, filiale:g.filiale, email:g.email, active:true, members:parseInt(g.members)||0, scans:parseInt(g.scans)||0, revenue:parseFloat(g.revenue)||0 })) });
+      return res.json({ gyms: rows.map(g=>({ id:g.id, name:g.name, address:g.address, filiale:g.filiale, email:g.email, active:g.active !== false, members:parseInt(g.members)||0, scans:parseInt(g.scans)||0, revenue:parseFloat(g.revenue)||0 })) });
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
@@ -113,6 +114,7 @@ module.exports = async function handler(req, res) {
     const { id, name, address, filiale, email, password, active } = req.body||{};
     if (!id) return res.status(400).json({ error:"id requis." });
     try {
+      await sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`.catch(()=>{});
       // Toggle actif/inactif uniquement
       if (name === undefined && active !== undefined) {
         await sql`UPDATE gyms SET active=${active} WHERE id=${id}`;
@@ -130,20 +132,66 @@ module.exports = async function handler(req, res) {
 
   // ── virements ──────────────────────────────────────────
   if (action === "virements") {
-    try {
-      const rows = await sql`
-        SELECT g.id as gym_id, g.name as gym_name,
-          TO_CHAR(DATE_TRUNC('month',p.created_at),'Mon. YYYY') as month,
-          DATE_TRUNC('month',p.created_at) as month_date,
-          COALESCE(SUM(p.amount_chf),0) as total
-        FROM payments p
-        LEFT JOIN users u ON p.user_id=u.id
-        LEFT JOIN gyms g ON u.gym_id=g.id
-        WHERE p.status='success' AND g.id IS NOT NULL
-        GROUP BY g.id,g.name,DATE_TRUNC('month',p.created_at)
-        ORDER BY month_date DESC,g.name`;
-      return res.json({ virements: rows.map(r=>({ id:`${r.gym_id}-${r.month_date}`, gym_id:r.gym_id, gym_name:r.gym_name, month:r.month, brut:parseFloat(r.total), net:parseFloat(r.total), status:'pending', date_paid:null })) });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    const ensureVirementTable = async () => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS virement_status (
+          gym_id     INTEGER NOT NULL,
+          month_date DATE NOT NULL,
+          status     VARCHAR(20) NOT NULL DEFAULT 'paid',
+          date_paid  TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (gym_id, month_date)
+        )`;
+    };
+
+    // GET — liste avec statut persisté
+    if (req.method === "GET") {
+      try {
+        await ensureVirementTable();
+        const rows = await sql`
+          SELECT g.id as gym_id, g.name as gym_name,
+            TO_CHAR(DATE_TRUNC('month',p.created_at),'Mon. YYYY') as month,
+            DATE_TRUNC('month',p.created_at) as month_date,
+            COALESCE(SUM(p.amount_chf),0) as total,
+            vs.status as vs_status, vs.date_paid as vs_date_paid
+          FROM payments p
+          LEFT JOIN users u ON p.user_id=u.id
+          LEFT JOIN gyms g ON u.gym_id=g.id
+          LEFT JOIN virement_status vs ON vs.gym_id=g.id AND vs.month_date=DATE_TRUNC('month',p.created_at)
+          WHERE p.status='success' AND g.id IS NOT NULL
+          GROUP BY g.id,g.name,DATE_TRUNC('month',p.created_at),vs.status,vs.date_paid
+          ORDER BY month_date DESC,g.name`;
+        return res.json({ virements: rows.map(r=>({
+          id:`${r.gym_id}-${new Date(r.month_date).toISOString().slice(0,10)}`,
+          gym_id:r.gym_id, gym_name:r.gym_name, month:r.month,
+          brut:parseFloat(r.total), net:parseFloat(r.total),
+          status: r.vs_status || 'pending',
+          date_paid: r.vs_date_paid ? new Date(r.vs_date_paid).toISOString() : null
+        })) });
+      } catch(e) { return res.status(500).json({ error:e.message }); }
+    }
+
+    // PUT — marquer payé / en attente (un seul ou en masse)
+    if (req.method === "PUT") {
+      const { items, gym_id, month_date, status } = req.body||{};
+      try {
+        await ensureVirementTable();
+        const list = Array.isArray(items) ? items : [{ gym_id, month_date, status }];
+        for (const it of list) {
+          if (!it.gym_id || !it.month_date) continue;
+          const md = String(it.month_date).slice(0,10);
+          if (it.status === 'paid') {
+            await sql`INSERT INTO virement_status (gym_id, month_date, status, date_paid)
+              VALUES (${it.gym_id}, ${md}, 'paid', NOW())
+              ON CONFLICT (gym_id, month_date) DO UPDATE SET status='paid', date_paid=NOW()`;
+          } else {
+            await sql`DELETE FROM virement_status WHERE gym_id=${it.gym_id} AND month_date=${md}`;
+          }
+        }
+        return res.json({ ok:true });
+      } catch(e) { return res.status(500).json({ error:e.message }); }
+    }
+
+    return res.status(405).end();
   }
 
   // ── db-setup : migrations complètes ──────────────────
@@ -224,7 +272,10 @@ module.exports = async function handler(req, res) {
         VALUES (${machine_id}, ${name}, ${gym_id||null}, ${secret||process.env.MACHINE_SECRET||'volt-admin-secret-2025'})
         RETURNING id, machine_id, name, gym_id, secret`;
       return res.status(201).json({ ok:true, machine:m });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) {
+      if (e.code === '23505' || /duplicate|unique/i.test(e.message)) return res.status(409).json({ error:"Ce Machine ID est déjà utilisé." });
+      return res.status(500).json({ error:e.message });
+    }
   }
 
   // ── machines PUT (modifier / toggle) ──────────────────
