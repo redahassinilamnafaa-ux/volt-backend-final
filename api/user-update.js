@@ -78,6 +78,16 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // ── DELETE /api/user-update?action=clear-history ───────────────
+  if (req.method === "DELETE" && req.query.action === "clear-history") {
+    try {
+      await sql`DELETE FROM scans WHERE user_id = ${auth.id}`;
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.status(500).json({ error: "Erreur serveur." });
+    }
+  }
+
   // ── POST /api/user-update → Modifier le profil ─────────────────
   if (req.method === "POST" && !req.query.action) {
     const { firstName, lastName, email, phone } = req.body || {};
