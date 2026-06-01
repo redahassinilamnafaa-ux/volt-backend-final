@@ -87,13 +87,14 @@ module.exports = async function handler(req, res) {
   // ── gyms GET ───────────────────────────────────────────
   if (action === "gyms" && req.method === "GET") {
     try {
+      await sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`.catch(()=>{});
       const rows = await sql`
         SELECT g.*,
           (SELECT COUNT(*) FROM users u WHERE u.gym_id=g.id AND u.subscribed=true) as members,
           (SELECT COUNT(*) FROM scans s LEFT JOIN users u ON s.user_id=u.id WHERE u.gym_id=g.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p LEFT JOIN users u ON p.user_id=u.id WHERE u.gym_id=g.id AND p.status='success' AND p.created_at>NOW()-INTERVAL '30 days') as revenue
         FROM gyms g ORDER BY g.created_at DESC`;
-      return res.json({ gyms: rows.map(g=>({ id:g.id, name:g.name, address:g.address, filiale:g.filiale, email:g.email, active:true, members:parseInt(g.members)||0, scans:parseInt(g.scans)||0, revenue:parseFloat(g.revenue)||0 })) });
+      return res.json({ gyms: rows.map(g=>({ id:g.id, name:g.name, address:g.address, filiale:g.filiale, email:g.email, active:g.active !== false, members:parseInt(g.members)||0, scans:parseInt(g.scans)||0, revenue:parseFloat(g.revenue)||0 })) });
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
@@ -113,6 +114,7 @@ module.exports = async function handler(req, res) {
     const { id, name, address, filiale, email, password, active } = req.body||{};
     if (!id) return res.status(400).json({ error:"id requis." });
     try {
+      await sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`.catch(()=>{});
       // Toggle actif/inactif uniquement
       if (name === undefined && active !== undefined) {
         await sql`UPDATE gyms SET active=${active} WHERE id=${id}`;
@@ -130,20 +132,66 @@ module.exports = async function handler(req, res) {
 
   // ── virements ──────────────────────────────────────────
   if (action === "virements") {
-    try {
-      const rows = await sql`
-        SELECT g.id as gym_id, g.name as gym_name,
-          TO_CHAR(DATE_TRUNC('month',p.created_at),'Mon. YYYY') as month,
-          DATE_TRUNC('month',p.created_at) as month_date,
-          COALESCE(SUM(p.amount_chf),0) as total
-        FROM payments p
-        LEFT JOIN users u ON p.user_id=u.id
-        LEFT JOIN gyms g ON u.gym_id=g.id
-        WHERE p.status='success' AND g.id IS NOT NULL
-        GROUP BY g.id,g.name,DATE_TRUNC('month',p.created_at)
-        ORDER BY month_date DESC,g.name`;
-      return res.json({ virements: rows.map(r=>({ id:`${r.gym_id}-${r.month_date}`, gym_id:r.gym_id, gym_name:r.gym_name, month:r.month, brut:parseFloat(r.total), net:parseFloat(r.total), status:'pending', date_paid:null })) });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    const ensureVirementTable = async () => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS virement_status (
+          gym_id     INTEGER NOT NULL,
+          month_date DATE NOT NULL,
+          status     VARCHAR(20) NOT NULL DEFAULT 'paid',
+          date_paid  TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (gym_id, month_date)
+        )`;
+    };
+
+    // GET — liste avec statut persisté
+    if (req.method === "GET") {
+      try {
+        await ensureVirementTable();
+        const rows = await sql`
+          SELECT g.id as gym_id, g.name as gym_name,
+            TO_CHAR(DATE_TRUNC('month',p.created_at),'Mon. YYYY') as month,
+            DATE_TRUNC('month',p.created_at) as month_date,
+            COALESCE(SUM(p.amount_chf),0) as total,
+            vs.status as vs_status, vs.date_paid as vs_date_paid
+          FROM payments p
+          LEFT JOIN users u ON p.user_id=u.id
+          LEFT JOIN gyms g ON u.gym_id=g.id
+          LEFT JOIN virement_status vs ON vs.gym_id=g.id AND vs.month_date=DATE_TRUNC('month',p.created_at)
+          WHERE p.status='success' AND g.id IS NOT NULL
+          GROUP BY g.id,g.name,DATE_TRUNC('month',p.created_at),vs.status,vs.date_paid
+          ORDER BY month_date DESC,g.name`;
+        return res.json({ virements: rows.map(r=>({
+          id:`${r.gym_id}-${new Date(r.month_date).toISOString().slice(0,10)}`,
+          gym_id:r.gym_id, gym_name:r.gym_name, month:r.month,
+          brut:parseFloat(r.total), net:parseFloat(r.total),
+          status: r.vs_status || 'pending',
+          date_paid: r.vs_date_paid ? new Date(r.vs_date_paid).toISOString() : null
+        })) });
+      } catch(e) { return res.status(500).json({ error:e.message }); }
+    }
+
+    // PUT — marquer payé / en attente (un seul ou en masse)
+    if (req.method === "PUT") {
+      const { items, gym_id, month_date, status } = req.body||{};
+      try {
+        await ensureVirementTable();
+        const list = Array.isArray(items) ? items : [{ gym_id, month_date, status }];
+        for (const it of list) {
+          if (!it.gym_id || !it.month_date) continue;
+          const md = String(it.month_date).slice(0,10);
+          if (it.status === 'paid') {
+            await sql`INSERT INTO virement_status (gym_id, month_date, status, date_paid)
+              VALUES (${it.gym_id}, ${md}, 'paid', NOW())
+              ON CONFLICT (gym_id, month_date) DO UPDATE SET status='paid', date_paid=NOW()`;
+          } else {
+            await sql`DELETE FROM virement_status WHERE gym_id=${it.gym_id} AND month_date=${md}`;
+          }
+        }
+        return res.json({ ok:true });
+      } catch(e) { return res.status(500).json({ error:e.message }); }
+    }
+
+    return res.status(405).end();
   }
 
   // ── db-setup : migrations complètes ──────────────────
@@ -157,32 +205,64 @@ module.exports = async function handler(req, res) {
     await run("create machines", sql`
       CREATE TABLE IF NOT EXISTS machines (
         id         SERIAL PRIMARY KEY,
-        machine_id VARCHAR(100) UNIQUE NOT NULL,
-        name       VARCHAR(255) NOT NULL,
-        gym_id     INTEGER REFERENCES gyms(id) ON DELETE SET NULL,
+        machine_id VARCHAR(100),
+        name       VARCHAR(255),
+        gym_id     INTEGER,
         secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
         active     BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    // Colonnes machines (pour tables déjà créées sans certaines colonnes)
+    await run("machines.machine_id", sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
+    await run("machines.name",       sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS name VARCHAR(255)`);
+    await run("machines.gym_id",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
+    await run("machines.secret",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret VARCHAR(255) DEFAULT 'volt-admin-secret-2025'`);
+    await run("machines.active",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
     // Colonnes gyms
-    await run("gyms.filiale", sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS filiale VARCHAR(100)`);
+    await run("gyms.filiale",        sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS filiale VARCHAR(100)`);
+    await run("gyms.active",         sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
     // Colonnes users
-    await run("users.gym_id", sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS gym_id INTEGER REFERENCES gyms(id) ON DELETE SET NULL`);
-    await run("users.authorized", sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT true`);
+    await run("users.gym_id",        sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
+    await run("users.authorized",    sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT true`);
     // Colonnes scans
-    await run("scans.gym_id", sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER REFERENCES gyms(id) ON DELETE SET NULL`);
-    await run("scans.machine_id", sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
+    await run("scans.gym_id",        sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
+    await run("scans.machine_id",    sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
     const allOk = steps.every(s => s.ok);
     return res.json({ ok: allOk, steps });
   }
 
+  // ── ensure machines table exists ──────────────────────
+  const ensureMachinesTable = async () => {
+    await sql`
+      CREATE TABLE IF NOT EXISTS machines (
+        id         SERIAL PRIMARY KEY,
+        machine_id VARCHAR(100),
+        name       VARCHAR(255),
+        gym_id     INTEGER,
+        secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
+        active     BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `;
+    // Ajouter les colonnes manquantes si la table existait déjà sans elles
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS name       VARCHAR(255)`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS gym_id     INTEGER`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret     VARCHAR(255) DEFAULT 'volt-admin-secret-2025'`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS active     BOOLEAN DEFAULT true`.catch(()=>{});
+    // Colonnes scans
+    await sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`.catch(()=>{});
+    await sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER`.catch(()=>{});
+  };
+
   // ── machines GET ───────────────────────────────────────
   if (action === "machines" && req.method === "GET") {
     try {
+      await ensureMachinesTable();
       const rows = await sql`
         SELECT m.id, m.machine_id, m.name, m.gym_id, m.secret, m.active,
-               g.name as gym_name, g.filiale as gym_filiale
+               g.name as gym_name
         FROM machines m
         LEFT JOIN gyms g ON m.gym_id = g.id
         ORDER BY m.created_at DESC`;
@@ -199,12 +279,16 @@ module.exports = async function handler(req, res) {
     const { machine_id, name, gym_id, secret } = req.body||{};
     if (!machine_id||!name) return res.status(400).json({ error:"machine_id et name requis." });
     try {
+      await ensureMachinesTable();
       const [m] = await sql`
         INSERT INTO machines (machine_id, name, gym_id, secret)
         VALUES (${machine_id}, ${name}, ${gym_id||null}, ${secret||process.env.MACHINE_SECRET||'volt-admin-secret-2025'})
         RETURNING id, machine_id, name, gym_id, secret`;
       return res.status(201).json({ ok:true, machine:m });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) {
+      if (e.code === '23505' || /duplicate|unique/i.test(e.message)) return res.status(409).json({ error:"Ce Machine ID est déjà utilisé." });
+      return res.status(500).json({ error:e.message });
+    }
   }
 
   // ── machines PUT (modifier / toggle) ──────────────────

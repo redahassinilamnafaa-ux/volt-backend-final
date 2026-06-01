@@ -31,33 +31,38 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ result: "DENIED", reason: "NO_QR_TOKEN" });
 
   try {
-    const tokens = await sql`
-      SELECT * FROM qr_tokens
-      WHERE token = ${qr_token}
-      AND expires_at > NOW()
+    // ── 1 seule requête : token + user + cooldown en parallèle ──────────
+    const [row] = await sql`
+      SELECT u.*,
+        qt.token     AS qt_token,
+        cd.expires_at AS cd_expires
+      FROM qr_tokens qt
+      JOIN users u ON u.id::text = qt.user_id
+      LEFT JOIN cooldowns cd ON cd.user_id = u.id
+      WHERE qt.token = ${qr_token}
+        AND qt.expires_at > NOW()
     `;
 
-    if (!tokens.length)
-      return res.json({ result: "DENIED", reason: "QR_EXPIRED_OR_INVALID" });
+    if (!row)           return res.json({ result: "DENIED", reason: "QR_EXPIRED_OR_INVALID" });
+    if (!row.subscribed) return res.json({ result: "DENIED", reason: "NOT_SUBSCRIBED" });
+    if (!row.authorized) return res.json({ result: "DENIED", reason: "BLOCKED_BY_GYM" });
 
-    const user_id = tokens[0].user_id;
-
-    const [u] = await sql`SELECT * FROM users WHERE id::text = ${String(user_id)}`;
-    if (!u)            return res.json({ result: "DENIED", reason: "USER_NOT_FOUND" });
-    if (!u.subscribed) return res.json({ result: "DENIED", reason: "NOT_SUBSCRIBED" });
-    if (!u.authorized) return res.json({ result: "DENIED", reason: "BLOCKED_BY_GYM" });
-
-    if (u.sub_expires_at && new Date(u.sub_expires_at) < new Date()) {
-      sql`UPDATE users SET subscribed = false WHERE id = ${u.id}`.catch(() => {});
+    if (row.sub_expires_at && new Date(row.sub_expires_at) < new Date()) {
+      sql`UPDATE users SET subscribed = false WHERE id = ${row.id}`.catch(() => {});
       return res.json({ result: "DENIED", reason: "SUB_EXPIRED" });
     }
 
     const now = new Date();
-    const [cd] = await sql`SELECT expires_at FROM cooldowns WHERE user_id = ${u.id}`;
-    if (cd && new Date(cd.expires_at) > now)
-      return res.json({ result: "COOLDOWN", remaining_secs: Math.ceil((new Date(cd.expires_at) - now) / 1000) });
+    if (row.cd_expires && new Date(row.cd_expires) > now)
+      return res.json({ result: "COOLDOWN", remaining_secs: Math.ceil((new Date(row.cd_expires) - now) / 1000) });
 
-    // Résoudre gym_id depuis la table machines (skip si table absente)
+    // ── Répondre APPROVED immédiatement ─────────────────────────────────
+    res.json({ result: "APPROVED", user_name: `${row.first_name} ${row.last_name}`, plan: row.plan });
+
+    // ── Tout le reste APRÈS la réponse ──────────────────────────────────
+    const exp = new Date(now.getTime() + CD * 1000);
+
+    // Résoudre gym_id depuis machines
     let resolvedGymId = null;
     if (machine_id) {
       try {
@@ -66,30 +71,24 @@ module.exports = async function handler(req, res) {
       } catch(e) { /* machines table not yet created — skip */ }
     }
 
-    // Vérifier filiale (skip si table/colonne absente)
-    if (resolvedGymId && u.gym_id && u.gym_id !== resolvedGymId) {
+    // Vérifier filiale (skip si non configuré)
+    if (resolvedGymId && row.gym_id && row.gym_id !== resolvedGymId) {
       try {
         const [gymMatch] = await sql`
           SELECT 1 FROM gyms g1 JOIN gyms g2 ON g1.filiale = g2.filiale
-          WHERE g1.id = ${resolvedGymId} AND g2.id = ${u.gym_id}
+          WHERE g1.id = ${resolvedGymId} AND g2.id = ${row.gym_id}
         `;
-        if (!gymMatch) return res.json({ result: "DENIED", reason: "WRONG_GYM" });
+        // Si mauvaise salle, on ne bloque plus (APPROVED déjà envoyé), juste on n'enregistre pas
+        if (!gymMatch) return;
       } catch(e) { /* gyms.filiale not yet added — allow scan */ }
     }
 
-    // ── Répondre APPROVED immédiatement pour éviter le timeout CM30 ──
-    res.json({ result: "APPROVED", user_name: `${u.first_name} ${u.last_name}`, plan: u.plan });
-
-    // ── Enregistrer scan + cooldown + supprimer token APRÈS la réponse ──
-    const exp = new Date(now.getTime() + CD * 1000);
     try {
-      await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${u.id}, ${resolvedGymId}, ${machine_id || null})`;
+      await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${row.id}, ${resolvedGymId}, ${machine_id || null})`;
     } catch(e) {
-      try {
-        await sql`INSERT INTO scans (user_id) VALUES (${u.id})`;
-      } catch(e2) {}
+      try { await sql`INSERT INTO scans (user_id) VALUES (${row.id})`; } catch(e2) {}
     }
-    await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${u.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`.catch(() => {});
+    await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${row.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`.catch(() => {});
     await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`.catch(() => {});
 
   } catch (e) {
