@@ -26,22 +26,23 @@ module.exports = async function handler(req, res) {
       return res.status(403).json({ error: "Vérifie ton email avant de générer un QR code.", code: "EMAIL_NOT_VERIFIED" });
 
     const now = new Date();
-    if (row.cd_expires && new Date(row.cd_expires) > now) {
-      const remaining = Math.ceil((new Date(row.cd_expires) - now) / 1000);
-      return res.json({ cooldown_remaining: remaining });
-    }
 
+    // Toujours générer un token (même pendant cooldown)
+    // → le CM30 reçoit COOLDOWN (pas QR_EXPIRED) quand il scanne pendant l'attente
     const token  = crypto.randomBytes(24).toString("hex");
     const expiry = new Date(Date.now() + QR_TTL * 1000);
 
-    // DELETE + INSERT en 1 seul round-trip via CTE
     await sql`
       WITH del AS (DELETE FROM qr_tokens WHERE user_id = ${String(auth.id)})
       INSERT INTO qr_tokens (user_id, token, expires_at)
       VALUES (${String(auth.id)}, ${token}, ${expiry})
     `;
 
-    return res.json({ token, expires_at: expiry.toISOString(), ttl: QR_TTL });
+    const result = { token, expires_at: expiry.toISOString(), ttl: QR_TTL };
+    if (row.cd_expires && new Date(row.cd_expires) > now) {
+      result.cooldown_remaining = Math.ceil((new Date(row.cd_expires) - now) / 1000);
+    }
+    return res.json(result);
 
   } catch (e) {
     console.error("qr-token error:", e);
