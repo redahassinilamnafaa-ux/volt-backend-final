@@ -42,18 +42,23 @@ module.exports = async function handler(req, res) {
         AND qt.expires_at > NOW()
     `;
 
-    if (!row)            return res.json({ result: "DENIED", reason: "QR_EXPIRED_OR_INVALID" });
-    if (!row.subscribed) return res.json({ result: "DENIED", reason: "NOT_SUBSCRIBED" });
-    if (!row.authorized) return res.json({ result: "DENIED", reason: "BLOCKED_BY_GYM" });
+    if (!row)            { console.log("DENIED QR_EXPIRED token="+qr_token?.slice(0,8)); return res.json({ result: "DENIED", reason: "QR_EXPIRED_OR_INVALID" }); }
+    if (!row.subscribed) { console.log("DENIED NOT_SUBSCRIBED user="+row.id); return res.json({ result: "DENIED", reason: "NOT_SUBSCRIBED" }); }
+    if (!row.authorized) { console.log("DENIED BLOCKED user="+row.id); return res.json({ result: "DENIED", reason: "BLOCKED_BY_GYM" }); }
 
     if (row.sub_expires_at && new Date(row.sub_expires_at) < new Date()) {
       sql`UPDATE users SET subscribed = false WHERE id = ${row.id}`.catch(() => {});
+      console.log("DENIED SUB_EXPIRED user="+row.id);
       return res.json({ result: "DENIED", reason: "SUB_EXPIRED" });
     }
 
     const now = new Date();
-    if (row.cd_expires && new Date(row.cd_expires) > now)
+    if (row.cd_expires && new Date(row.cd_expires) > now) {
+      console.log("COOLDOWN user="+row.id+" remaining="+Math.ceil((new Date(row.cd_expires)-now)/1000)+"s cdExpires="+row.cd_expires);
       return res.json({ result: "COOLDOWN", remaining_secs: Math.ceil((new Date(row.cd_expires) - now) / 1000) });
+    }
+
+    console.log("APPROVED user="+row.id+" plan="+row.plan);
 
     // ── APPROVED immédiatement — Neon est maintenant chaud ───────────
     // Les écritures suivantes s'exécutent sur connexion chaude (~200ms chacune)
