@@ -38,23 +38,27 @@ module.exports = async function handler(req, res) {
         cd.expires_at AS cd_expires
       FROM qr_tokens qt
       JOIN users u ON u.id::text = qt.user_id::text
-      LEFT JOIN cooldowns cd ON cd.user_id = u.id
+      LEFT JOIN cooldowns cd ON cd.user_id::text = u.id::text
       WHERE qt.token = ${qr_token}
         AND qt.expires_at > NOW()
     `;
 
-    if (!row)            return res.json({ result: "DENIED", reason: "QR_EXPIRED_OR_INVALID" });
-    if (!row.subscribed) return res.json({ result: "DENIED", reason: "NOT_SUBSCRIBED" });
-    if (!row.authorized) return res.json({ result: "DENIED", reason: "BLOCKED_BY_GYM" });
+    if (!row)            { console.log("validate: QR_EXPIRED_OR_INVALID token=", qr_token?.slice(0,8)); return res.json({ result: "DENIED", reason: "QR_EXPIRED_OR_INVALID" }); }
+    if (!row.subscribed) { console.log("validate: NOT_SUBSCRIBED user=", row.id); return res.json({ result: "DENIED", reason: "NOT_SUBSCRIBED" }); }
+    if (!row.authorized) { console.log("validate: BLOCKED_BY_GYM user=", row.id); return res.json({ result: "DENIED", reason: "BLOCKED_BY_GYM" }); }
 
     if (row.sub_expires_at && new Date(row.sub_expires_at) < new Date()) {
       sql`UPDATE users SET subscribed = false WHERE id = ${row.id}`.catch(() => {});
+      console.log("validate: SUB_EXPIRED user=", row.id);
       return res.json({ result: "DENIED", reason: "SUB_EXPIRED" });
     }
 
     const now = new Date();
-    if (row.cd_expires && new Date(row.cd_expires) > now)
-      return res.json({ result: "COOLDOWN", remaining_secs: Math.ceil((new Date(row.cd_expires) - now) / 1000) });
+    if (row.cd_expires && new Date(row.cd_expires) > now) {
+      const secs = Math.ceil((new Date(row.cd_expires) - now) / 1000);
+      console.log("validate: COOLDOWN user=", row.id, "remaining=", secs);
+      return res.json({ result: "COOLDOWN", remaining_secs: secs });
+    }
 
     // ── Résoudre gym_id depuis machines ────────────────────────────
     let resolvedGymId = null;
@@ -87,6 +91,7 @@ module.exports = async function handler(req, res) {
     await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`.catch(() => {});
 
     // ── APPROVED seulement après que tout soit committé ────────────
+    console.log("validate: APPROVED user=", row.id, "plan=", row.plan);
     return res.json({ result: "APPROVED", user_name: `${row.first_name} ${row.last_name}`, plan: row.plan });
 
   } catch (e) {
