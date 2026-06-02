@@ -34,20 +34,17 @@ module.exports = async function handler(req, res) {
     if (!email) return res.status(400).json({ error: "Email requis." });
     const lc = String(email).toLowerCase().trim();
     try {
-      // Chercher d'abord côté membre (users), puis côté gérant (gyms)
       const [u] = await sql`SELECT id FROM users WHERE email = ${lc}`;
       let accountType = u ? "user" : null;
       if (!accountType) {
         const [g] = await sql`SELECT id FROM gyms WHERE email = ${lc}`;
         if (g) accountType = "gym";
       }
-      // Réponse identique même si l'email n'existe pas (anti-énumération)
       if (!accountType) return res.json({ ok: true });
 
       await ensureResetTable();
       const token   = crypto.randomBytes(32).toString("hex");
-      const expires = new Date(Date.now() + 3600 * 1000); // 1h
-      // Invalider les anciens tokens de cet email puis insérer le nouveau
+      const expires = new Date(Date.now() + 3600 * 1000);
       await sql`DELETE FROM password_resets WHERE email = ${lc}`;
       await sql`INSERT INTO password_resets (token, email, account_type, expires_at)
                 VALUES (${token}, ${lc}, ${accountType}, ${expires})`;
@@ -112,18 +109,17 @@ module.exports = async function handler(req, res) {
     `;
 
     if (!u) {
-      // Cet email correspond-il à un compte gérant de fitness ? → rediriger vers l'espace gérant
       const [gym] = await sql`SELECT id FROM gyms WHERE email = ${email.toLowerCase()}`;
       if (gym)
         return res.status(403).json({
           error: "Ce compte est un espace Fitness (gérant). Connecte-toi sur la page Espace Fitness, pas sur l'app membre.",
           is_gym: true,
         });
-      return res.status(401).json({ error: "Email ou mot de passe incorrect." });
+      return res.status(401).json({ error: "Aucun compte trouvé avec cet email.", code: "EMAIL_NOT_FOUND" });
     }
 
     const ok = await bcrypt.compare(password, u.password);
-    if (!ok) return res.status(401).json({ error: "Email ou mot de passe incorrect." });
+    if (!ok) return res.status(401).json({ error: "Mot de passe incorrect.", code: "WRONG_PASSWORD" });
 
     if (!u.email_verified) {
       return res.status(403).json({
@@ -133,7 +129,6 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Vérification paresseuse : si sub_expires_at est passé, désabonner l'utilisateur
     if (u.subscribed && u.sub_expires_at && new Date(u.sub_expires_at) < new Date()) {
       u.subscribed = false;
       sql`UPDATE users SET subscribed = false WHERE id = ${u.id}`.catch(() => {});
