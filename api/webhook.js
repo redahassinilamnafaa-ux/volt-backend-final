@@ -33,7 +33,7 @@ module.exports = async function handler(req, res) {
       );
       return res.json({ ok: true, sent: users.length });
     } catch (e) {
-      return res.status(500).json({ error: e.message });
+      console.error("[webhook]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 
@@ -47,12 +47,11 @@ module.exports = async function handler(req, res) {
     const sig = req.headers["stripe-signature"];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-    if (webhookSecret) {
-      event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
-    } else {
-      console.error("[webhook] STRIPE_WEBHOOK_SECRET manquant — définir dans les variables Vercel");
-      event = JSON.parse(rawBody.toString());
+    if (!webhookSecret) {
+      console.error("[webhook] FATAL: STRIPE_WEBHOOK_SECRET manquant — définir dans les variables Vercel");
+      return res.status(500).json({ error: "Configuration webhook manquante." });
     }
+    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
   } catch (err) {
     console.error("[webhook] Signature invalide:", err.message);
     return res.status(400).json({ error: "Webhook Error: " + err.message });
@@ -137,8 +136,8 @@ module.exports = async function handler(req, res) {
         break;
     }
   } catch (e) {
-    console.error("Webhook handler error:", e);
-    return res.status(500).json({ error: e.message });
+    console.error("[webhook] handler error:", e);
+    return res.status(500).json({ error: "Erreur serveur." });
   }
 
   return res.json({ received: true });

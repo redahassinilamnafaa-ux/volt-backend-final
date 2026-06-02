@@ -2,16 +2,21 @@ const cors            = require("../lib/cors");
 const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
 const crypto          = require("crypto");
+const { rateLimit }   = require("../lib/ratelimit");
 
 const QR_TTL = 5 * 60; // 5 minutes
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).end();
 
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
+
+  // Rate limiting : 30 requêtes par minute par utilisateur
+  const rl = rateLimit(`qr:${auth.id}`, 30, 60 * 1000);
+  if (!rl.ok) return res.status(429).json({ error: "Trop de requêtes. Ralentis." });
 
   try {
     // 1 seule requête : user + cooldown en parallèle via LEFT JOIN
@@ -45,7 +50,7 @@ module.exports = async function handler(req, res) {
     return res.json(result);
 
   } catch (e) {
-    console.error("qr-token error:", e);
-    return res.status(500).json({ error: "Erreur: " + e.message });
+    console.error("[qr-token]", e);
+    return res.status(500).json({ error: "Erreur serveur." });
   }
 };

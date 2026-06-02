@@ -2,23 +2,56 @@ const cors   = require("../lib/cors");
 const sql    = require("../lib/db");
 const bcrypt = require("bcryptjs");
 const { Resend } = require("resend");
-
-const SECRET = process.env.ADMIN_SECRET || "volt-admin-secret-2025";
-
-function auth(req, res) {
-  if (req.headers["x-admin-secret"] !== SECRET) {
-    res.status(401).json({ error: "Non autorisé." });
-    return false;
-  }
-  return true;
-}
+const { signToken, requireAuth } = require("../lib/auth");
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (!auth(req, res)) return;
 
   const { action } = req.query;
+
+  // ── Login admin (pas d'auth requise) ──────────────────
+  if (action === "login" && req.method === "POST") {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: "Champs manquants." });
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    if (!adminEmail || !adminPassword) return res.status(500).json({ error: "Configuration serveur manquante." });
+    if (email.toLowerCase() !== adminEmail.toLowerCase() || password !== adminPassword) {
+      return res.status(401).json({ error: "Identifiants incorrects." });
+    }
+    const token = signToken({ role: "admin", email: adminEmail }, "8h");
+    return res.json({ token });
+  }
+
+  // ── Cron notify (auth spéciale CRON_SECRET) ───────────
+  if (action === "cron-notify" && req.method === "GET") {
+    const cronAuth = req.headers.authorization;
+    if (process.env.CRON_SECRET && cronAuth !== `Bearer ${process.env.CRON_SECRET}`)
+      return res.status(401).json({ error: "Unauthorized" });
+    try {
+      const rows = await sql`
+        SELECT id, first_name, email, sub_expires_at FROM users
+        WHERE subscribed = true AND sub_expires_at IS NOT NULL
+          AND sub_expires_at > NOW() + INTERVAL '6 days'
+          AND sub_expires_at <= NOW() + INTERVAL '7 days'
+      `;
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      let sent = 0;
+      for (const u of rows) {
+        const expDate = new Date(u.sub_expires_at).toLocaleDateString("fr-CH", { timeZone:"Europe/Zurich", day:"numeric", month:"long", year:"numeric" });
+        try {
+          await resend.emails.send({ from:"VOLT. <noreply@volt-energy.ch>", to:u.email, subject:"⚠️ Ton abonnement VOLT. expire dans 7 jours", html:`<style>@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&display=swap');</style><div style="background:#040c22;padding:32px 16px;font-family:Arial,sans-serif"><div style="max-width:460px;margin:0 auto"><div style="background:#071433;border-radius:18px;overflow:hidden"><div style="background:#071433;padding:32px 32px 22px;border-bottom:1px solid rgba(0,87,255,.14)"><div style="font-size:76px;font-weight:900;color:#fff;letter-spacing:-2px;line-height:.9;font-family:'Barlow Condensed','Arial Black',Arial,sans-serif">VOLT.</div><div style="width:44px;height:4px;background:#FF9500;margin-top:14px;border-radius:2px"></div></div><div style="padding:28px 32px 22px"><div style="font-size:20px;font-weight:800;color:#fff;margin-bottom:10px">Ton abonnement expire bientôt ⚠️</div><div style="font-size:14px;color:rgba(255,255,255,.55);line-height:1.8;margin-bottom:24px">Salut <strong style="color:#fff">${u.first_name}</strong>,<br/>Ton abonnement expire le <strong style="color:#fff">${expDate}</strong> (dans <strong style="color:#FF9500">7 jours</strong>).</div><a href="https://volt-energy.ch/VoltApp.html" style="display:block;background:#0057FF;color:#fff;text-align:center;padding:15px 20px;border-radius:12px;font-size:15px;font-weight:900;text-decoration:none">RENOUVELER →</a></div><div style="padding:14px 32px;border-top:1px solid rgba(255,255,255,.05)"><div style="font-size:11px;color:rgba(255,255,255,.18)">VOLT. · Crissier · Switzerland</div></div></div></div></div>` });
+          sent++;
+        } catch(emailErr) { console.error(`cron-notify ${u.email}:`, emailErr); }
+      }
+      return res.json({ ok:true, sent, total:rows.length });
+    } catch(e) { return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
+  // ── Toutes les autres actions nécessitent un JWT admin ─
+  const authData = requireAuth(req);
+  if (!authData || authData.role !== "admin") return res.status(401).json({ error: "Non autorisé." });
 
   // ── stats ──────────────────────────────────────────────
   if (action === "stats") {
@@ -32,7 +65,7 @@ module.exports = async function handler(req, res) {
         sql`SELECT COALESCE(SUM(amount_chf),0) as n FROM payments WHERE status='success'`,
       ]);
       return res.json({ subscribers:parseInt(subs.n), total_users:parseInt(users.n), total_gyms:parseInt(gyms.n), scans_month:parseInt(scans.n), rev_month:parseFloat(rm.n), rev_total:parseFloat(rt.n) });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── clients ────────────────────────────────────────────
@@ -58,7 +91,7 @@ module.exports = async function handler(req, res) {
         revenue:parseFloat(c.revenue)||0,
         joined:new Date(c.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'})
       })) });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── access (bloquer/débloquer un client) ───────────────
@@ -68,7 +101,7 @@ module.exports = async function handler(req, res) {
     try {
       await sql`UPDATE users SET authorized=${authorized} WHERE id=${user_id}`;
       return res.json({ ok:true });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── subscribe (activer/désactiver manuellement) ────────
@@ -89,7 +122,7 @@ module.exports = async function handler(req, res) {
         await sql`UPDATE users SET subscribed=false WHERE id=${user_id}`;
       }
       return res.json({ ok:true });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── payments ───────────────────────────────────────────
@@ -97,7 +130,7 @@ module.exports = async function handler(req, res) {
     try {
       const rows = await sql`SELECT p.*,u.first_name,u.last_name FROM payments p LEFT JOIN users u ON p.user_id=u.id ORDER BY p.created_at DESC LIMIT 100`;
       return res.json({ payments: rows.map(p=>({ id:p.id, client:p.first_name+' '+p.last_name, plan:p.plan, amount:parseFloat(p.amount_chf), method:p.method, status:p.status, date:new Date(p.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'}) })) });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── gyms GET ───────────────────────────────────────────
@@ -111,7 +144,7 @@ module.exports = async function handler(req, res) {
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p LEFT JOIN users u ON p.user_id=u.id WHERE u.gym_id=g.id AND p.status='success' AND p.created_at>NOW()-INTERVAL '30 days') as revenue
         FROM gyms g ORDER BY g.created_at DESC`;
       return res.json({ gyms: rows.map(g=>({ id:g.id, name:g.name, address:g.address, filiale:g.filiale, email:g.email, active:g.active !== false, members:parseInt(g.members)||0, scans:parseInt(g.scans)||0, revenue:parseFloat(g.revenue)||0 })) });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── gyms POST (créer) ──────────────────────────────────
@@ -122,7 +155,7 @@ module.exports = async function handler(req, res) {
       const hash = await bcrypt.hash(password, 10);
       const [g] = await sql`INSERT INTO gyms (name,address,filiale,email,password) VALUES (${name},${address||null},${filiale},${email.toLowerCase()},${hash}) RETURNING id,name,filiale,email,address`;
       return res.status(201).json({ ok:true, gym:g });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── gyms PUT (modifier) ────────────────────────────────
@@ -143,7 +176,7 @@ module.exports = async function handler(req, res) {
         await sql`UPDATE gyms SET name=${name},address=${address||null},filiale=${filiale},email=${email.toLowerCase()} WHERE id=${id}`;
       }
       return res.json({ ok:true });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── virements ──────────────────────────────────────────
@@ -186,7 +219,7 @@ module.exports = async function handler(req, res) {
           status: r.vs_status || 'pending',
           date_paid: r.vs_date_paid ? new Date(r.vs_date_paid).toISOString() : null
         })) });
-      } catch(e) { return res.status(500).json({ error:e.message }); }
+      } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
     }
 
     if (req.method === "PUT") {
@@ -206,7 +239,7 @@ module.exports = async function handler(req, res) {
           }
         }
         return res.json({ ok:true });
-      } catch(e) { return res.status(500).json({ error:e.message }); }
+      } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
     }
   }
 
@@ -224,7 +257,7 @@ module.exports = async function handler(req, res) {
         machine_id VARCHAR(100),
         name       VARCHAR(255),
         gym_id     INTEGER,
-        secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
+        secret     VARCHAR(255) NOT NULL DEFAULT '',
         active     BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT NOW()
       )
@@ -243,7 +276,7 @@ module.exports = async function handler(req, res) {
     await run("machines.machine_id", sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
     await run("machines.name",       sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS name VARCHAR(255)`);
     await run("machines.gym_id",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
-    await run("machines.secret",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret VARCHAR(255) DEFAULT 'volt-admin-secret-2025'`);
+    await run("machines.secret",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret VARCHAR(255) DEFAULT ''`);
     await run("machines.active",     sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
     await run("gyms.filiale",        sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS filiale VARCHAR(100)`);
     await run("gyms.active",         sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
@@ -263,7 +296,7 @@ module.exports = async function handler(req, res) {
         machine_id VARCHAR(100),
         name       VARCHAR(255),
         gym_id     INTEGER,
-        secret     VARCHAR(255) NOT NULL DEFAULT 'volt-admin-secret-2025',
+        secret     VARCHAR(255) NOT NULL DEFAULT '',
         active     BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT NOW()
       )
@@ -272,7 +305,7 @@ module.exports = async function handler(req, res) {
     await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`.catch(()=>{});
     await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS name       VARCHAR(255)`.catch(()=>{});
     await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS gym_id     INTEGER`.catch(()=>{});
-    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret     VARCHAR(255) DEFAULT 'volt-admin-secret-2025'`.catch(()=>{});
+    await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS secret     VARCHAR(255) DEFAULT ''`.catch(()=>{});
     await sql`ALTER TABLE machines ADD COLUMN IF NOT EXISTS active     BOOLEAN DEFAULT true`.catch(()=>{});
     // Colonnes scans
     await sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`.catch(()=>{});
@@ -294,7 +327,7 @@ module.exports = async function handler(req, res) {
         gym_id: m.gym_id, gym_name: m.gym_name || null,
         secret: m.secret, active: m.active
       })) });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── machines POST (créer) ──────────────────────────────
@@ -305,12 +338,12 @@ module.exports = async function handler(req, res) {
       await ensureMachinesTable();
       const [m] = await sql`
         INSERT INTO machines (machine_id, name, gym_id, secret)
-        VALUES (${machine_id}, ${name}, ${gym_id||null}, ${secret||process.env.MACHINE_SECRET||'volt-admin-secret-2025'})
+        VALUES (${machine_id}, ${name}, ${gym_id||null}, ${secret||process.env.MACHINE_SECRET||''})
         RETURNING id, machine_id, name, gym_id, secret`;
       return res.status(201).json({ ok:true, machine:m });
     } catch(e) {
       if (e.code === '23505' || /duplicate|unique/i.test(e.message)) return res.status(409).json({ error:"Ce Machine ID est déjà utilisé." });
-      return res.status(500).json({ error:e.message });
+      console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." });
     }
   }
 
@@ -325,7 +358,7 @@ module.exports = async function handler(req, res) {
         await sql`UPDATE machines SET machine_id=${machine_id}, name=${name}, gym_id=${gym_id||null}, secret=${secret} WHERE id=${id}`;
       }
       return res.json({ ok:true });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   // ── machines DELETE ────────────────────────────────────
@@ -335,32 +368,7 @@ module.exports = async function handler(req, res) {
     try {
       await sql`DELETE FROM machines WHERE id=${id}`;
       return res.json({ ok:true });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
-  }
-
-  // ── cron-notify : email J-7 expiration ───────────────
-  if (action === "cron-notify" && req.method === "GET") {
-    const cronAuth = req.headers.authorization;
-    if (process.env.CRON_SECRET && cronAuth !== `Bearer ${process.env.CRON_SECRET}`)
-      return res.status(401).json({ error: "Unauthorized" });
-    try {
-      const rows = await sql`
-        SELECT id, first_name, email, sub_expires_at FROM users
-        WHERE subscribed = true AND sub_expires_at IS NOT NULL
-          AND sub_expires_at > NOW() + INTERVAL '6 days'
-          AND sub_expires_at <= NOW() + INTERVAL '7 days'
-      `;
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      let sent = 0;
-      for (const u of rows) {
-        const expDate = new Date(u.sub_expires_at).toLocaleDateString("fr-CH", { timeZone:"Europe/Zurich", day:"numeric", month:"long", year:"numeric" });
-        try {
-          await resend.emails.send({ from:"VOLT. <noreply@volt-energy.ch>", to:u.email, subject:"⚠️ Ton abonnement VOLT. expire dans 7 jours", html:`<style>@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&display=swap');</style><div style="background:#040c22;padding:32px 16px;font-family:Arial,sans-serif"><div style="max-width:460px;margin:0 auto"><div style="background:#071433;border-radius:18px;overflow:hidden"><div style="background:#071433;padding:32px 32px 22px;border-bottom:1px solid rgba(0,87,255,.14)"><div style="font-size:76px;font-weight:900;color:#fff;letter-spacing:-2px;line-height:.9;font-family:'Barlow Condensed','Arial Black',Arial,sans-serif">VOLT.</div><div style="width:44px;height:4px;background:#FF9500;margin-top:14px;border-radius:2px"></div></div><div style="padding:28px 32px 22px"><div style="font-size:20px;font-weight:800;color:#fff;margin-bottom:10px">Ton abonnement expire bientôt ⚠️</div><div style="font-size:14px;color:rgba(255,255,255,.55);line-height:1.8;margin-bottom:24px">Salut <strong style="color:#fff">${u.first_name}</strong>,<br/>Ton abonnement expire le <strong style="color:#fff">${expDate}</strong> (dans <strong style="color:#FF9500">7 jours</strong>).</div><a href="https://volt-energy.ch/VoltApp.html" style="display:block;background:#0057FF;color:#fff;text-align:center;padding:15px 20px;border-radius:12px;font-size:15px;font-weight:900;text-decoration:none">RENOUVELER →</a></div><div style="padding:14px 32px;border-top:1px solid rgba(255,255,255,.05)"><div style="font-size:11px;color:rgba(255,255,255,.18)">VOLT. · Crissier · Switzerland</div></div></div></div></div>` });
-          sent++;
-        } catch(emailErr) { console.error(`cron-notify ${u.email}:`, emailErr); }
-      }
-      return res.json({ ok:true, sent, total:rows.length });
-    } catch(e) { return res.status(500).json({ error:e.message }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   return res.status(400).json({ error:"Action inconnue." });

@@ -5,7 +5,7 @@ const Stripe = require("stripe");
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).end();
 
@@ -46,6 +46,6 @@ module.exports = async function handler(req, res) {
     });
 
   } catch (e) {
-    return res.status(500).json({ error: "Erreur serveur / Stripe : " + e.message });
+    console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
   }
 };

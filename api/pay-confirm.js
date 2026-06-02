@@ -8,7 +8,7 @@ const { sendReceipt } = require("../lib/email");
 const DUR = { month: 1, quarter: 3, year: 12 };
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST")    return res.status(405).end();
 
@@ -52,7 +52,7 @@ module.exports = async function handler(req, res) {
 
       return res.json({ ok: true });
     } catch(e) {
-      return res.status(500).json({ error: "Erreur TWINT: " + e.message });
+      console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 
@@ -63,7 +63,7 @@ module.exports = async function handler(req, res) {
   if (!months) return res.status(400).json({ error: "Plan invalide." });
 
   try {
-    const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
+    const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
     if (u.stripe_customer && u.stripe_customer !== customer_id) {
@@ -105,6 +105,6 @@ module.exports = async function handler(req, res) {
     return res.json({ ok: true, subscription_id: subscription.id });
 
   } catch(e) {
-    return res.status(500).json({ error: "Erreur: " + e.message });
+    console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
   }
 };

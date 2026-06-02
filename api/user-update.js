@@ -7,7 +7,7 @@ const { Resend }      = require("resend");
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const auth = requireAuth(req);
@@ -17,8 +17,11 @@ module.exports = async function handler(req, res) {
   if (req.method === "GET" && req.query.action === "me") {
     try {
       const [u] = await sql`
-        SELECT u.*, g.name AS gym_name,
-          (SELECT COUNT(*) FROM users WHERE referred_by = u.id AND subscribed = true) AS ref_count
+        SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.plan, u.subscribed,
+               u.authorized, u.email_verified, u.gym_id, u.referral_code, u.free_months,
+               u.sub_expires_at, u.cancel_at_period_end,
+               g.name AS gym_name,
+               (SELECT COUNT(*) FROM users WHERE referred_by = u.id AND subscribed = true) AS ref_count
         FROM users u LEFT JOIN gyms g ON u.gym_id = g.id
         WHERE u.id = ${auth.id}
       `;
@@ -42,7 +45,7 @@ module.exports = async function handler(req, res) {
         }
       });
     } catch (e) {
-      return res.status(500).json({ error: "Erreur: " + e.message });
+      console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 
@@ -138,7 +141,7 @@ module.exports = async function handler(req, res) {
       await sql`DELETE FROM users        WHERE id      = ${auth.id}`;
       return res.json({ ok: true });
     } catch (e) {
-      return res.status(500).json({ error: "Erreur: " + e.message });
+      console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 
@@ -166,7 +169,7 @@ module.exports = async function handler(req, res) {
 
       return res.json({ invoices });
     } catch (e) {
-      return res.status(500).json({ error: "Erreur: " + e.message });
+      console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 
@@ -182,6 +185,10 @@ module.exports = async function handler(req, res) {
       let invoice;
       if (invoice_id) {
         invoice = await stripe.invoices.retrieve(invoice_id);
+        // Vérifier que la facture appartient bien à ce client
+        if (invoice.customer !== u.stripe_customer) {
+          return res.status(403).json({ error: "Non autorisé." });
+        }
       } else {
         const list = await stripe.invoices.list({ customer: u.stripe_customer, limit: 1, status: "paid" });
         invoice = list.data[0];
@@ -203,7 +210,7 @@ module.exports = async function handler(req, res) {
 
       return res.json({ ok: true });
     } catch (e) {
-      return res.status(500).json({ error: "Erreur: " + e.message });
+      console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 
@@ -264,7 +271,7 @@ module.exports = async function handler(req, res) {
 
       return res.json({ ok: true, free_months: updatedUser.free_months, sub_expires_at: updatedUser.sub_expires_at });
     } catch (e) {
-      return res.status(500).json({ error: "Erreur serveur : " + e.message });
+      console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 

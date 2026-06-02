@@ -4,6 +4,7 @@ const { signToken } = require("../lib/auth");
 const bcrypt        = require("bcryptjs");
 const { Resend }    = require("resend");
 const crypto        = require("crypto");
+const { rateLimit, getIp } = require("../lib/ratelimit");
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -12,7 +13,7 @@ const emailHtml = (firstName, lien) => `<style>@import url('https://fonts.google
 const resendHtml = (firstName, lien) => `<style>@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&display=swap');</style><div style="background:#040c22;padding:32px 16px;font-family:Arial,sans-serif"><div style="max-width:460px;margin:0 auto"><div style="background:#071433;border-radius:18px;overflow:hidden"><div style="background:#071433;padding:32px 32px 22px;border-bottom:1px solid rgba(0,87,255,.14)"><div style="font-size:76px;font-weight:900;color:#FFFFFF;letter-spacing:-2px;line-height:.9;font-family:'Barlow Condensed','Arial Black',Arial,sans-serif">VOLT.</div><div style="width:44px;height:4px;background:#0057FF;margin-top:14px;border-radius:2px"></div></div><div style="padding:28px 32px 22px"><div style="font-size:20px;font-weight:800;color:#FFFFFF;margin-bottom:10px">Confirme ton email ⚡</div><div style="font-size:14px;color:rgba(255,255,255,.55);line-height:1.8;margin-bottom:24px">Salut <strong style="color:#FFFFFF">${firstName}</strong>,<br/>Voici ton nouveau lien de confirmation.</div><a href="${lien}" style="display:block;background:#0057FF;color:#FFFFFF;text-align:center;padding:15px 20px;border-radius:12px;font-size:15px;font-weight:900;text-decoration:none;letter-spacing:.04em;font-family:Arial Black,Arial,sans-serif">CONFIRMER MON EMAIL →</a><div style="font-size:11px;color:rgba(255,255,255,.18);text-align:center;margin-top:16px">Ce lien expire dans 24h.</div></div><div style="padding:14px 32px;border-top:1px solid rgba(255,255,255,.05);display:flex;align-items:center;justify-content:space-between"><div style="font-size:18px;font-weight:900;color:rgba(255,255,255,.2);letter-spacing:-2px;font-family:Arial Black,Arial,sans-serif">VOLT.</div><div style="font-size:11px;color:rgba(255,255,255,.18)">Crissier · Switzerland</div></div></div></div></div>`;
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
 
   if (req.method === "POST" && req.query.action === "resend") {
@@ -35,10 +36,14 @@ module.exports = async function handler(req, res) {
         html: resendHtml(user.first_name, lien)
       });
       return res.json({ ok: true });
-    } catch(e) { return res.status(500).json({ error: "Erreur: " + e.message }); }
+    } catch(e) { console.error("[register]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   if (req.method !== "POST") return res.status(405).end();
+
+  // Rate limiting : 5 inscriptions par IP par heure
+  const rl = rateLimit(`register:${getIp(req)}`, 5, 60 * 60 * 1000);
+  if (!rl.ok) return res.status(429).json({ error: "Trop de tentatives. Réessaie dans une heure." });
 
   const { firstName, lastName, email, phone, password, ref_code } = req.body || {};
   if (!firstName || !lastName || !email || !password)
@@ -100,6 +105,6 @@ module.exports = async function handler(req, res) {
     });
 
   } catch (e) {
-    return res.status(500).json({ error: "Erreur: " + e.message });
+    console.error("[register]", e); return res.status(500).json({ error: "Erreur serveur." });
   }
 };

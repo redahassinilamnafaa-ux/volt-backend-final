@@ -11,7 +11,7 @@ const APP_VERSION = {
 };
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
 
   if (req.method === "GET") return res.json(APP_VERSION);
@@ -31,7 +31,7 @@ module.exports = async function handler(req, res) {
       try {
         const [machine] = await sql`SELECT * FROM machines WHERE machine_id = ${machine_id} AND active = true`;
         if (machine) {
-          if (providedSecret === machine.secret || providedSecret === process.env.MACHINE_SECRET || providedSecret === "volt-admin-secret-2025") {
+          if (providedSecret === machine.secret || (process.env.MACHINE_SECRET && providedSecret === process.env.MACHINE_SECRET)) {
             machineValid = true;
             resolvedGymId = machine.gym_id || resolvedGymId;
           } else {
@@ -42,8 +42,8 @@ module.exports = async function handler(req, res) {
     }
 
     if (!machineValid) {
-      const globalSecret = process.env.MACHINE_SECRET || "volt-admin-secret-2025";
-      if (providedSecret !== globalSecret) return res.status(401).json({ result: "DENIED", reason: "SECRET_INVALID" });
+      const globalSecret = process.env.MACHINE_SECRET;
+      if (!globalSecret || providedSecret !== globalSecret) return res.status(401).json({ result: "DENIED", reason: "SECRET_INVALID" });
     }
 
     // ── 2. Lecture Token + User + Cooldown ────────────────

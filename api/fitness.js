@@ -4,7 +4,7 @@ const { requireAuth, signToken } = require("../lib/auth");
 const bcrypt          = require("bcryptjs");
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const { action } = req.query;
@@ -14,13 +14,13 @@ module.exports = async function handler(req, res) {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: "Champs manquants." });
     try {
-      const [g] = await sql`SELECT * FROM gyms WHERE email = ${email.toLowerCase()}`;
+      const [g] = await sql`SELECT id, name, filiale, email, address, password FROM gyms WHERE email = ${email.toLowerCase()}`;
       if (!g) return res.status(401).json({ error: "Email ou mot de passe incorrect." });
       const ok = await bcrypt.compare(password, g.password);
       if (!ok) return res.status(401).json({ error: "Email ou mot de passe incorrect." });
       const token = signToken({ id: g.id, email: g.email, role: "gym" });
       return res.json({ token, gym: { id: g.id, name: g.name, filiale: g.filiale, email: g.email, address: g.address } });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   // Auth requise pour les autres routes
@@ -49,7 +49,7 @@ module.exports = async function handler(req, res) {
         rev_month:      parseFloat(revM.n)  || 0,
         rev_total:      parseFloat(revT.n)  || 0,
       });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   // ── MEMBRES du fitness ─────────────────────────────────
@@ -77,7 +77,7 @@ module.exports = async function handler(req, res) {
         revenue: parseFloat(m.revenue) || 0,
         joined: new Date(m.created_at).toLocaleDateString('fr-CH', { day:'numeric', month:'short', year:'numeric' }),
       })) });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   // ── SCANS par jour (30 derniers jours) ─────────────────
@@ -90,7 +90,7 @@ module.exports = async function handler(req, res) {
         GROUP BY DATE(s.scanned_at) ORDER BY day ASC
       `;
       return res.json({ scans: rows.map(r => ({ day: r.day, n: parseInt(r.n) })) });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   // ── VIREMENTS reçus ────────────────────────────────────
@@ -114,7 +114,7 @@ module.exports = async function handler(req, res) {
         nb_payments: parseInt(r.nb_payments) || 0,
         status: 'paid',
       })) });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   // ── AUTORISER / BLOQUER un membre ─────────────────────
@@ -127,7 +127,7 @@ module.exports = async function handler(req, res) {
       if (!u) return res.status(403).json({ error: "Membre non trouvé dans votre fitness." });
       await sql`UPDATE users SET authorized=${authorized} WHERE id=${user_id}`;
       return res.json({ ok: true });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   return res.status(400).json({ error: "Action inconnue." });
