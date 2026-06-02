@@ -3,6 +3,7 @@ const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
 const Stripe          = require("stripe");
 const stripe          = new Stripe(process.env.STRIPE_SECRET_KEY);
+const { sendReceipt } = require("../lib/email");
 
 const DUR = { month: 1, quarter: 3, year: 12 };
 
@@ -43,9 +44,11 @@ module.exports = async function handler(req, res) {
         VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
         ON CONFLICT (stripe_payment_id) DO NOTHING
       `;
-      const [u2] = await sql`SELECT referred_by FROM users WHERE id = ${auth.id}`;
+      const [u2] = await sql`SELECT referred_by, email, first_name FROM users WHERE id = ${auth.id}`;
       if (u2?.referred_by)
         await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u2.referred_by}`;
+
+      sendReceipt(u2?.email, u2?.first_name || '', pidPlan, pi.amount / 100, exp).catch(() => {});
 
       return res.json({ ok: true });
     } catch(e) {
@@ -63,12 +66,10 @@ module.exports = async function handler(req, res) {
     const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
-    // Vérifier que le customer_id appartient bien à cet utilisateur
     if (u.stripe_customer && u.stripe_customer !== customer_id) {
       return res.status(403).json({ error: "Paramètre invalide." });
     }
 
-    // Définir la carte comme méthode de paiement par défaut
     await stripe.customers.update(customer_id, {
       invoice_settings: { default_payment_method: payment_method_id },
     });
@@ -81,7 +82,6 @@ module.exports = async function handler(req, res) {
       expand:                 ['latest_invoice.payment_intent'],
     });
 
-    // Utiliser la date de fin de période Stripe (fiable, évite le bug setMonth)
     const exp = new Date(subscription.current_period_end * 1000);
 
     await sql`
@@ -97,9 +97,10 @@ module.exports = async function handler(req, res) {
       ON CONFLICT (stripe_payment_id) DO NOTHING
     `;
 
-    // Crédit parrainage (same mechanism as TWINT)
     if (u.referred_by)
       await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u.referred_by}`;
+
+    sendReceipt(u.email, u.first_name || '', plan_id, invoice?.amount_paid ? invoice.amount_paid/100 : 0, exp).catch(() => {});
 
     return res.json({ ok: true, subscription_id: subscription.id });
 
