@@ -10,13 +10,8 @@ const PRICE_IDS = {
   year:    process.env.STRIPE_PRICE_YEAR,
 };
 
-const ALLOWED_RETURN_ORIGINS = [
-  "https://volt-energy.ch",
-  "https://www.volt-energy.ch",
-];
-
 module.exports = async function handler(req, res) {
-  cors(req, res);
+  cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST")    return res.status(405).end();
 
@@ -28,7 +23,7 @@ module.exports = async function handler(req, res) {
   if (!priceId) return res.status(400).json({ error: "Plan invalide." });
 
   try {
-    const [u] = await sql`SELECT id, email, first_name, last_name, stripe_customer FROM users WHERE id = ${auth.id}`;
+    const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
     
     let isPromoValid = false;
@@ -53,25 +48,36 @@ module.exports = async function handler(req, res) {
       await sql`UPDATE users SET stripe_customer = ${customerId} WHERE id = ${u.id}`;
     }
 
-    // ── TWINT : PaymentIntent one-time ────────────────────────────────
+    // ── TWINT : PaymentIntent one-time (Pas de subscription possible) ──────────
     if (method === 'twint') {
-      const price = await stripe.prices.retrieve(priceId);
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount:   price.unit_amount,
-        currency: price.currency,
-        customer: customerId,
-        payment_method_types: ['twint'],
-        metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
-        ...(return_url && ALLOWED_RETURN_ORIGINS.some(o => return_url.startsWith(o)) ? { return_url } : {}),
-      });
-      return res.json({
-        client_secret: paymentIntent.client_secret,
-        payment_intent_id: paymentIntent.id,
-        customer_id: customerId,
-        price_id: priceId,
-        plan_id,
-        method: 'twint',
-      });
+      try {
+        const price = await stripe.prices.retrieve(priceId);
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount:   price.unit_amount,
+          currency: 'chf',
+          customer: customerId,
+          payment_method_types: ['twint'],
+          metadata: {
+            plan_id,
+            volt_user_id: String(u.id),
+            price_id: priceId,
+            type: 'one_time_payment'
+          },
+          ...(return_url ? { return_url } : {}),
+        });
+
+        return res.json({
+          client_secret: paymentIntent.client_secret,
+          payment_intent_id: paymentIntent.id,
+          customer_id: customerId,
+          price_id: priceId,
+          plan_id,
+          method: 'twint',
+        });
+      } catch (stripeErr) {
+        console.error("Stripe TWINT Error:", stripeErr);
+        return res.status(400).json({ error: "Erreur Stripe TWINT: " + stripeErr.message });
+      }
     }
 
     // ── CARTE : SetupIntent → Subscription ───────────────────────────
@@ -90,7 +96,6 @@ module.exports = async function handler(req, res) {
     });
 
   } catch(e) {
-    console.error("[pay-intent]", e);
-    return res.status(500).json({ error: "Une erreur est survenue, veuillez réessayer." });
+    return res.status(500).json({ error: "Erreur Stripe: " + e.message });
   }
 };
