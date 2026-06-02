@@ -240,11 +240,11 @@ module.exports = async function handler(req, res) {
       if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
       if (u.free_months <= 0) return res.status(400).json({ error: "Aucun mois gratuit disponible." });
 
-      let currentExp = u.sub_expires_at ? new Date(u.sub_expires_at) : new Date();
-      if (currentExp < new Date()) {
-        currentExp = new Date();
-      }
-      currentExp.setMonth(currentExp.getMonth() + 1);
+      const base = (u.sub_expires_at && new Date(u.sub_expires_at) > new Date()) ? new Date(u.sub_expires_at) : new Date();
+      const tYear = base.getUTCFullYear() + Math.floor((base.getUTCMonth() + 1) / 12);
+      const tMonth = (base.getUTCMonth() + 1) % 12;
+      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
+      let currentExp = new Date(Date.UTC(tYear, tMonth, Math.min(base.getUTCDate(), lastDay)));
 
       if (u.stripe_customer) {
         try {

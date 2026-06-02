@@ -38,16 +38,17 @@ module.exports = async function handler(req, res) {
       const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
       const exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
 
+      const [uBefore] = await sql`SELECT referred_by, subscribed FROM users WHERE id = ${auth.id}`;
       await sql`UPDATE users SET subscribed = true, plan = ${pidPlan}, sub_expires_at = ${exp} WHERE id = ${auth.id}`;
       await sql`
         INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
         VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
         ON CONFLICT (stripe_payment_id) DO NOTHING
       `;
-      const [u2] = await sql`SELECT referred_by, email, first_name FROM users WHERE id = ${auth.id}`;
-      if (u2?.referred_by)
-        await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u2.referred_by}`;
+      if (uBefore?.referred_by && !uBefore.subscribed)
+        await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${uBefore.referred_by}`;
 
+      const [u2] = await sql`SELECT email, first_name FROM users WHERE id = ${auth.id}`;
       sendReceipt(u2?.email, u2?.first_name || '', pidPlan, pi.amount / 100, exp).catch(() => {});
 
       return res.json({ ok: true });
@@ -63,7 +64,7 @@ module.exports = async function handler(req, res) {
   if (!months) return res.status(400).json({ error: "Plan invalide." });
 
   try {
-    const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by FROM users WHERE id = ${auth.id}`;
+    const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by, subscribed FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
     if (u.stripe_customer && u.stripe_customer !== customer_id) {
@@ -97,7 +98,7 @@ module.exports = async function handler(req, res) {
       ON CONFLICT (stripe_payment_id) DO NOTHING
     `;
 
-    if (u.referred_by)
+    if (u.referred_by && !u.subscribed)
       await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u.referred_by}`;
 
     sendReceipt(u.email, u.first_name || '', plan_id, invoice?.amount_paid ? invoice.amount_paid/100 : 0, exp).catch(() => {});
