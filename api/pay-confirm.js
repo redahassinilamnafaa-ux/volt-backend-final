@@ -31,7 +31,11 @@ module.exports = async function handler(req, res) {
       const months = DUR[pidPlan];
       if (!months) return res.status(400).json({ error: "Plan invalide." });
 
-      const exp = new Date(Date.now() + months * 30 * 86400000);
+      const _now = new Date();
+      const tYear = _now.getUTCFullYear() + Math.floor((_now.getUTCMonth() + months) / 12);
+      const tMonth = (_now.getUTCMonth() + months) % 12;
+      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
+      const exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
 
       await sql`UPDATE users SET subscribed = true, plan = ${pidPlan}, sub_expires_at = ${exp} WHERE id = ${auth.id}`;
       await sql`

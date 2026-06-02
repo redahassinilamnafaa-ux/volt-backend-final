@@ -67,7 +67,10 @@ module.exports = async function handler(req, res) {
         const durMonths = { month:1, quarter:3, year:12 };
         const months = durMonths[plan] || 1;
         const now = new Date();
-        const exp = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + months, now.getUTCDate()));
+        const tYear = now.getUTCFullYear() + Math.floor((now.getUTCMonth() + months) / 12);
+        const tMonth = (now.getUTCMonth() + months) % 12;
+        const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
+        const exp = new Date(Date.UTC(tYear, tMonth, Math.min(now.getUTCDate(), lastDay)));
         await sql`UPDATE users SET subscribed=true, plan=${plan||'month'}, sub_expires_at=${exp} WHERE id=${user_id}`;
       } else {
         await sql`UPDATE users SET subscribed=false WHERE id=${user_id}`;
