@@ -61,6 +61,91 @@ module.exports = async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error:e.message }); }
   }
 
+  // ── access (bloquer/débloquer un client) ───────────────
+  if (action === "access" && req.method === "POST") {
+    const { user_id, authorized } = req.body||{};
+    if (!user_id) return res.status(400).json({ error:"user_id requis." });
+    try {
+      await sql`UPDATE users SET authorized=${authorized} WHERE id=${user_id}`;
+      return res.json({ ok:true });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── subscribe (activer/désactiver manuellement) ────────
+  if (action === "subscribe" && req.method === "POST") {
+    const { user_id, subscribed, plan } = req.body||{};
+    if (!user_id) return res.status(400).json({ error:"user_id requis." });
+    try {
+      if (subscribed) {
+        const durMonths = { month:1, quarter:3, year:12 };
+        const months = durMonths[plan] || 1;
+        const now = new Date();
+        const tYear = now.getUTCFullYear() + Math.floor((now.getUTCMonth() + months) / 12);
+        const tMonth = (now.getUTCMonth() + months) % 12;
+        const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
+        const exp = new Date(Date.UTC(tYear, tMonth, Math.min(now.getUTCDate(), lastDay)));
+        await sql`UPDATE users SET subscribed=true, plan=${plan||'month'}, sub_expires_at=${exp} WHERE id=${user_id}`;
+      } else {
+        await sql`UPDATE users SET subscribed=false WHERE id=${user_id}`;
+      }
+      return res.json({ ok:true });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── payments ───────────────────────────────────────────
+  if (action === "payments") {
+    try {
+      const rows = await sql`SELECT p.*,u.first_name,u.last_name FROM payments p LEFT JOIN users u ON p.user_id=u.id ORDER BY p.created_at DESC LIMIT 100`;
+      return res.json({ payments: rows.map(p=>({ id:p.id, client:p.first_name+' '+p.last_name, plan:p.plan, amount:parseFloat(p.amount_chf), method:p.method, status:p.status, date:new Date(p.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'}) })) });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── gyms GET ───────────────────────────────────────────
+  if (action === "gyms" && req.method === "GET") {
+    try {
+      await sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`.catch(()=>{});
+      const rows = await sql`
+        SELECT g.*,
+          (SELECT COUNT(*) FROM users u WHERE u.gym_id=g.id AND u.subscribed=true) as members,
+          (SELECT COUNT(*) FROM scans s LEFT JOIN users u ON s.user_id=u.id WHERE u.gym_id=g.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
+          (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p LEFT JOIN users u ON p.user_id=u.id WHERE u.gym_id=g.id AND p.status='success' AND p.created_at>NOW()-INTERVAL '30 days') as revenue
+        FROM gyms g ORDER BY g.created_at DESC`;
+      return res.json({ gyms: rows.map(g=>({ id:g.id, name:g.name, address:g.address, filiale:g.filiale, email:g.email, active:g.active !== false, members:parseInt(g.members)||0, scans:parseInt(g.scans)||0, revenue:parseFloat(g.revenue)||0 })) });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── gyms POST (créer) ──────────────────────────────────
+  if (action === "gyms" && req.method === "POST") {
+    const { name, address, filiale, email, password } = req.body||{};
+    if (!name||!filiale||!email||!password) return res.status(400).json({ error:"Champs manquants." });
+    try {
+      const hash = await bcrypt.hash(password, 10);
+      const [g] = await sql`INSERT INTO gyms (name,address,filiale,email,password) VALUES (${name},${address||null},${filiale},${email.toLowerCase()},${hash}) RETURNING id,name,filiale,email,address`;
+      return res.status(201).json({ ok:true, gym:g });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
+  // ── gyms PUT (modifier) ────────────────────────────────
+  if (action === "gyms" && req.method === "PUT") {
+    const { id, name, address, filiale, email, password, active } = req.body||{};
+    if (!id) return res.status(400).json({ error:"id requis." });
+    try {
+      await sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`.catch(()=>{});
+      // Toggle actif/inactif uniquement
+      if (name === undefined && active !== undefined) {
+        await sql`UPDATE gyms SET active=${active} WHERE id=${id}`;
+        return res.json({ ok:true });
+      }
+      if (password) {
+        const hash = await bcrypt.hash(password, 10);
+        await sql`UPDATE gyms SET name=${name},address=${address||null},filiale=${filiale},email=${email.toLowerCase()},password=${hash} WHERE id=${id}`;
+      } else {
+        await sql`UPDATE gyms SET name=${name},address=${address||null},filiale=${filiale},email=${email.toLowerCase()} WHERE id=${id}`;
+      }
+      return res.json({ ok:true });
+    } catch(e) { return res.status(500).json({ error:e.message }); }
+  }
+
   // ── virements ──────────────────────────────────────────
   if (action === "virements") {
     const ensureVirementTable = async () => {
