@@ -11,7 +11,7 @@ const PRICE_IDS = {
 };
 
 module.exports = async function handler(req, res) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST")    return res.status(405).end();
 
@@ -25,16 +25,11 @@ module.exports = async function handler(req, res) {
   try {
     const [u] = await sql`SELECT * FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
-    
-    let isPromoValid = false;
+
     if (promo_code) {
       const cleanCode = promo_code.trim().toUpperCase();
       const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${cleanCode} AND id != ${auth.id}`;
-      if (referrer) {
-        isPromoValid = true;
-      } else {
-        return res.status(400).json({ error: "Le code promo/parrainage est invalide." });
-      }
+      if (!referrer) return res.status(400).json({ error: "Le code promo/parrainage est invalide." });
     }
 
     let customerId = u.stripe_customer;
@@ -53,38 +48,45 @@ module.exports = async function handler(req, res) {
       const price = await stripe.prices.retrieve(priceId);
       const paymentIntent = await stripe.paymentIntents.create({
         amount:   price.unit_amount,
-        currency: price.currency,
+        currency: 'chf',
         customer: customerId,
         payment_method_types: ['twint'],
-        metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
+        metadata: {
+          plan_id,
+          volt_user_id: String(u.id),
+          price_id: priceId,
+          payment_type: 'twint',
+        },
         ...(return_url ? { return_url } : {}),
       });
       return res.json({
-        client_secret: paymentIntent.client_secret,
-        payment_intent_id: paymentIntent.id,
-        customer_id: customerId,
-        price_id: priceId,
+        client_secret:      paymentIntent.client_secret,
+        payment_intent_id:  paymentIntent.id,
+        customer_id:        customerId,
+        price_id:           priceId,
         plan_id,
         method: 'twint',
       });
     }
 
-    // ── CARTE : SetupIntent → Subscription ───────────────────────────
+    // ── CARTE : SetupIntent (authentification off-session propre) ────
     const setupIntent = await stripe.setupIntents.create({
-      customer: customerId,
+      customer:             customerId,
       payment_method_types: ['card'],
-      metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
+      usage:                'off_session',
+      metadata:             { plan_id, volt_user_id: String(u.id), price_id: priceId },
     });
-
     return res.json({
-      client_secret: setupIntent.client_secret,
-      setup_intent_id: setupIntent.id,
-      customer_id: customerId,
-      price_id: priceId,
+      client_secret:    setupIntent.client_secret,
+      setup_intent_id:  setupIntent.id,
+      customer_id:      customerId,
+      price_id:         priceId,
       plan_id,
+      method: 'card',
     });
 
-  } catch(e) {
+  } catch (e) {
+    console.error("[pay-intent]", e);
     return res.status(500).json({ error: "Erreur Stripe: " + e.message });
   }
 };
