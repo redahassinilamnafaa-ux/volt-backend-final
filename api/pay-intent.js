@@ -69,18 +69,35 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // ── CARTE : SetupIntent (authentification off-session propre) ────
-    const setupIntent = await stripe.setupIntents.create({
-      customer:             customerId,
-      payment_method_types: ['card'],
-      usage:                'off_session',
-      metadata:             { plan_id, volt_user_id: String(u.id), price_id: priceId },
+    // ── CARTE : abonnement incomplet → PaymentIntent on-session ──────
+    // Annuler les abonnements incomplets existants pour éviter les doublons
+    const existingSubs = await stripe.subscriptions.list({
+      customer: customerId,
+      status:   'incomplete',
+      limit:    5,
     });
+    for (const sub of existingSubs.data) {
+      if (sub.items.data.some(i => i.price.id === priceId)) {
+        await stripe.subscriptions.cancel(sub.id);
+      }
+    }
+
+    const subscription = await stripe.subscriptions.create({
+      customer:         customerId,
+      items:            [{ price: priceId }],
+      payment_behavior: 'default_incomplete',
+      payment_settings: { save_default_payment_method: 'on_subscription' },
+      metadata:         { volt_user_id: String(u.id), plan_id },
+      expand:           ['latest_invoice.payment_intent'],
+    });
+
+    const paymentIntent = subscription.latest_invoice.payment_intent;
     return res.json({
-      client_secret:    setupIntent.client_secret,
-      setup_intent_id:  setupIntent.id,
-      customer_id:      customerId,
-      price_id:         priceId,
+      client_secret:     paymentIntent.client_secret,
+      payment_intent_id: paymentIntent.id,
+      subscription_id:   subscription.id,
+      customer_id:       customerId,
+      price_id:          priceId,
       plan_id,
       method: 'card',
     });
