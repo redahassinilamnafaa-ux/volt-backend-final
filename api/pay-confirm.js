@@ -76,6 +76,8 @@ module.exports = async function handler(req, res) {
     const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by, subscribed FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
+    // Attacher le PM au customer pour les renouvellements (si pas déjà attaché)
+    try { await stripe.paymentMethods.attach(pmId, { customer: customer_id }); } catch(e) {}
     await stripe.customers.update(customer_id, {
       invoice_settings: { default_payment_method: pmId },
     });

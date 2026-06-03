@@ -69,15 +69,14 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // ── CARTE : PaymentIntent + setup_future_usage ──────────────────
+    // ── CARTE : PaymentIntent (charge immédiate) ─────────────────────
     const price = await stripe.prices.retrieve(priceId);
     const paymentIntent = await stripe.paymentIntents.create({
-      amount:              price.unit_amount,
-      currency:            price.currency || 'chf',
-      customer:            customerId,
+      amount:               price.unit_amount,
+      currency:             price.currency || 'chf',
+      customer:             customerId,
       payment_method_types: ['card'],
-      setup_future_usage:  'off_session',
-      metadata:            { plan_id, volt_user_id: String(u.id), price_id: priceId, payment_type: 'card' },
+      metadata:             { plan_id, volt_user_id: String(u.id), price_id: priceId, payment_type: 'card' },
     });
     return res.json({
       client_secret:      paymentIntent.client_secret,
