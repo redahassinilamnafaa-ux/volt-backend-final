@@ -57,51 +57,57 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  if (!setup_intent_id || !payment_method_id || !plan_id)
+  // ── CARTE : vérification du PaymentIntent et création abonnement ──
+  if (!payment_intent_id || !plan_id || method !== 'card')
     return res.status(400).json({ error: "Paramètres manquants." });
 
   const months = DUR[plan_id];
   if (!months) return res.status(400).json({ error: "Plan invalide." });
 
   try {
+    const pi = await stripe.paymentIntents.retrieve(payment_intent_id);
+    if (pi.status !== 'succeeded') return res.status(400).json({ error: "Paiement non confirmé." });
+    if (String(pi.metadata.volt_user_id) !== String(auth.id))
+      return res.status(403).json({ error: "Non autorisé." });
+
+    const pmId = pi.payment_method;
+    if (!pmId) return res.status(400).json({ error: "Moyen de paiement manquant." });
+
     const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by, subscribed FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
-    if (u.stripe_customer && u.stripe_customer !== customer_id) {
-      return res.status(403).json({ error: "Paramètre invalide." });
-    }
-
     await stripe.customers.update(customer_id, {
-      invoice_settings: { default_payment_method: payment_method_id },
+      invoice_settings: { default_payment_method: pmId },
     });
 
+    // Calculer la prochaine date de facturation (fin de la période déjà payée)
+    const _now = new Date();
+    const tYear  = _now.getUTCFullYear() + Math.floor((_now.getUTCMonth() + months) / 12);
+    const tMonth = (_now.getUTCMonth() + months) % 12;
+    const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
+    const exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
+
+    // Abonnement avec trial_end = fin de la période payée (pas de double facturation)
     const subscription = await stripe.subscriptions.create({
       customer:               customer_id,
       items:                  [{ price: price_id }],
-      default_payment_method: payment_method_id,
+      default_payment_method: pmId,
+      trial_end:              Math.floor(exp.getTime() / 1000),
       metadata:               { volt_user_id: String(auth.id), plan: plan_id },
-      expand:                 ['latest_invoice.payment_intent'],
     });
 
-    const exp = new Date(subscription.current_period_end * 1000);
+    await sql`UPDATE users SET subscribed = true, plan = ${plan_id}, sub_expires_at = ${exp}, stripe_customer = ${customer_id} WHERE id = ${auth.id}`;
 
-    await sql`
-      UPDATE users SET subscribed = true, plan = ${plan_id}, sub_expires_at = ${exp}
-      WHERE id = ${auth.id}
-    `;
-
-    const invoice = subscription.latest_invoice;
     await sql`
       INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
-      VALUES (${auth.id}, ${plan_id}, ${invoice?.amount_paid ? invoice.amount_paid/100 : 0},
-              ${subscription.id}, 'card', 'success')
+      VALUES (${auth.id}, ${plan_id}, ${pi.amount / 100}, ${pi.id}, 'card', 'success')
       ON CONFLICT (stripe_payment_id) DO NOTHING
     `;
 
     if (u.referred_by && !u.subscribed)
       await sql`UPDATE users SET free_months = free_months + 1 WHERE id = ${u.referred_by}`;
 
-    sendReceipt(u.email, u.first_name || '', plan_id, invoice?.amount_paid ? invoice.amount_paid/100 : 0, exp).catch(() => {});
+    sendReceipt(u.email, u.first_name || '', plan_id, pi.amount / 100, exp).catch(() => {});
 
     return res.json({ ok: true, subscription_id: subscription.id });
 

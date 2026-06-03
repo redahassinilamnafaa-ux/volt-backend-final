@@ -69,18 +69,23 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // ── CARTE : SetupIntent → Subscription ──────────────────────────
-    const setupIntent = await stripe.setupIntents.create({
-      customer: customerId,
+    // ── CARTE : PaymentIntent + setup_future_usage ──────────────────
+    const price = await stripe.prices.retrieve(priceId);
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount:              price.unit_amount,
+      currency:            price.currency || 'chf',
+      customer:            customerId,
       payment_method_types: ['card'],
-      metadata: { plan_id, volt_user_id: String(u.id), price_id: priceId },
+      setup_future_usage:  'off_session',
+      metadata:            { plan_id, volt_user_id: String(u.id), price_id: priceId, payment_type: 'card' },
     });
     return res.json({
-      client_secret:    setupIntent.client_secret,
-      setup_intent_id:  setupIntent.id,
-      customer_id:      customerId,
-      price_id:         priceId,
+      client_secret:      paymentIntent.client_secret,
+      payment_intent_id:  paymentIntent.id,
+      customer_id:        customerId,
+      price_id:           priceId,
       plan_id,
+      method: 'card',
     });
 
   } catch (e) {
