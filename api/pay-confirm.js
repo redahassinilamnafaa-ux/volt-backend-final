@@ -44,7 +44,7 @@ module.exports = async function handler(req, res) {
         VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
         ON CONFLICT (stripe_payment_id) DO NOTHING
       `;
-      if (uBefore?.referred_by && !uBefore.subscribed)
+      if (uBefore?.referred_by && !uBefore.subscribed && pidPlan === 'year')
         await sql`UPDATE users SET free_months = LEAST(free_months + 1, 12) WHERE id = ${uBefore.referred_by}`;
 
       const [u2] = await sql`SELECT email, first_name FROM users WHERE id = ${auth.id}`;
@@ -96,7 +96,7 @@ module.exports = async function handler(req, res) {
       ON CONFLICT (stripe_payment_id) DO NOTHING
     `;
 
-    if (u.referred_by && !u.subscribed)
+    if (u.referred_by && !u.subscribed && plan_id === 'year')
       await sql`UPDATE users SET free_months = LEAST(free_months + 1, 12) WHERE id = ${u.referred_by}`;
 
     sendReceipt(u.email, u.first_name || '', plan_id, pi.amount / 100, exp).catch(() => {});
