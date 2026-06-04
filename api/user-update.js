@@ -1,6 +1,7 @@
 const cors            = require("../lib/cors");
 const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
+const { rateLimit }   = require("../lib/ratelimit");
 const Stripe          = require("stripe");
 const { Resend }      = require("resend");
 
@@ -235,6 +236,10 @@ module.exports = async function handler(req, res) {
 
   // ── POST /api/user-update?action=claim-referral ────────
   if (req.method === "POST" && req.query.action === "claim-referral") {
+    // Rate limit : 1 réclamation par utilisateur par 24h
+    const rl = rateLimit(`claim-ref:${auth.id}`, 1, 24 * 60 * 60 * 1000);
+    if (!rl.ok) return res.status(429).json({ error: "Tu as déjà réclamé un mois aujourd'hui. Réessaie demain." });
+
     try {
       const [u] = await sql`SELECT free_months, sub_expires_at, stripe_customer FROM users WHERE id = ${auth.id}`;
       if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });

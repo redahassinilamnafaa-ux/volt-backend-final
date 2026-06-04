@@ -65,7 +65,8 @@ module.exports = async function handler(req, res) {
 
     let referredById = null;
     if (ref_code) {
-      const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${ref_code.toUpperCase()}`;
+      // Le parrain doit avoir un email vérifié (empêche comptes jetables intermédiaires)
+      const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${ref_code.toUpperCase()} AND email_verified = true`;
       if (referrer) referredById = referrer.id;
     }
 
