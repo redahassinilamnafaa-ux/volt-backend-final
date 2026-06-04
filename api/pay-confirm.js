@@ -15,8 +15,7 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
-  const { setup_intent_id, payment_method_id, plan_id, customer_id, price_id,
-          payment_intent_id, method } = req.body || {};
+  const { payment_intent_id, plan_id, customer_id, method } = req.body || {};
 
   // ── TWINT : vérification du PaymentIntent et activation ──────────
   if (method === 'twint') {
@@ -57,48 +56,39 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // ── CARTE : vérification du PaymentIntent et création abonnement ──
-  if (!payment_intent_id || !plan_id || method !== 'card')
+  // ── CARTE : vérification du PaymentIntent d'abonnement ───────────
+  if (!payment_intent_id || !plan_id)
     return res.status(400).json({ error: "Paramètres manquants." });
 
   const months = DUR[plan_id];
   if (!months) return res.status(400).json({ error: "Plan invalide." });
 
   try {
-    const pi = await stripe.paymentIntents.retrieve(payment_intent_id);
-    if (pi.status !== 'succeeded') return res.status(400).json({ error: "Paiement non confirmé." });
-    if (String(pi.metadata.volt_user_id) !== String(auth.id))
-      return res.status(403).json({ error: "Non autorisé." });
-
-    const pmId = pi.payment_method;
-    if (!pmId) return res.status(400).json({ error: "Moyen de paiement manquant." });
-
     const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by, subscribed FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
-    // Attacher le PM au customer pour les renouvellements (si pas déjà attaché)
-    try { await stripe.paymentMethods.attach(pmId, { customer: customer_id }); } catch(e) {}
-    await stripe.customers.update(customer_id, {
-      invoice_settings: { default_payment_method: pmId },
+    const pi = await stripe.paymentIntents.retrieve(payment_intent_id, {
+      expand: ['invoice.subscription'],
     });
+    if (pi.status !== 'succeeded') return res.status(400).json({ error: "Paiement non confirmé." });
 
-    // Calculer la prochaine date de facturation (fin de la période déjà payée)
-    const _now = new Date();
-    const tYear  = _now.getUTCFullYear() + Math.floor((_now.getUTCMonth() + months) / 12);
-    const tMonth = (_now.getUTCMonth() + months) % 12;
-    const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
-    const exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
+    // Vérifier que ce PaymentIntent appartient bien au customer de cet utilisateur
+    if (pi.customer !== u.stripe_customer)
+      return res.status(403).json({ error: "Non autorisé." });
 
-    // Abonnement avec trial_end = fin de la période payée (pas de double facturation)
-    const subscription = await stripe.subscriptions.create({
-      customer:               customer_id,
-      items:                  [{ price: price_id }],
-      default_payment_method: pmId,
-      trial_end:              Math.floor(exp.getTime() / 1000),
-      metadata:               { volt_user_id: String(auth.id), plan: plan_id },
-    });
+    const sub = pi.invoice?.subscription;
+    let exp;
+    if (sub) {
+      exp = new Date(sub.current_period_end * 1000);
+    } else {
+      const _now = new Date();
+      const tYear  = _now.getUTCFullYear() + Math.floor((_now.getUTCMonth() + months) / 12);
+      const tMonth = (_now.getUTCMonth() + months) % 12;
+      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
+      exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
+    }
 
-    await sql`UPDATE users SET subscribed = true, plan = ${plan_id}, sub_expires_at = ${exp}, stripe_customer = ${customer_id} WHERE id = ${auth.id}`;
+    await sql`UPDATE users SET subscribed = true, plan = ${plan_id}, sub_expires_at = ${exp}, stripe_customer = ${u.stripe_customer} WHERE id = ${auth.id}`;
 
     await sql`
       INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
@@ -111,7 +101,7 @@ module.exports = async function handler(req, res) {
 
     sendReceipt(u.email, u.first_name || '', plan_id, pi.amount / 100, exp).catch(() => {});
 
-    return res.json({ ok: true, subscription_id: subscription.id });
+    return res.json({ ok: true, subscription_id: sub?.id });
 
   } catch(e) {
     console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
