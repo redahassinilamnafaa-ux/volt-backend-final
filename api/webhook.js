@@ -1,5 +1,6 @@
 const sql    = require("../lib/db");
 const Stripe = require("stripe");
+const { sendExpiryReminder, sendFailedPayment } = require("../lib/email");
 
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -13,6 +14,29 @@ function getRawBody(req) {
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  // ── CRON : rappels d'expiration (GET /api/webhook) ───────────────
+  if (req.method === "GET") {
+    const cronSecret = process.env.CRON_SECRET;
+    if (!cronSecret || req.headers['authorization'] !== `Bearer ${cronSecret}`) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const users = await sql`
+        SELECT email, first_name, plan, sub_expires_at
+        FROM users
+        WHERE subscribed = true
+          AND sub_expires_at BETWEEN NOW() + INTERVAL '3 days' AND NOW() + INTERVAL '4 days'
+      `;
+      await Promise.allSettled(
+        users.map(u => sendExpiryReminder(u.email, u.first_name || '', u.plan, u.sub_expires_at))
+      );
+      return res.json({ ok: true, sent: users.length });
+    } catch (e) {
+      console.error("[webhook]", e); return res.status(500).json({ error: "Erreur serveur." });
+    }
+  }
+
   if (req.method !== "POST") return res.status(405).end();
 
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
@@ -23,12 +47,11 @@ module.exports = async function handler(req, res) {
     const sig = req.headers["stripe-signature"];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-    if (webhookSecret) {
-      event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
-    } else {
-      console.error("[webhook] STRIPE_WEBHOOK_SECRET manquant — définir dans les variables Vercel");
-      event = JSON.parse(rawBody.toString());
+    if (!webhookSecret) {
+      console.error("[webhook] FATAL: STRIPE_WEBHOOK_SECRET manquant — définir dans les variables Vercel");
+      return res.status(500).json({ error: "Configuration webhook manquante." });
     }
+    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
   } catch (err) {
     console.error("[webhook] Signature invalide:", err.message);
     return res.status(400).json({ error: "Webhook Error: " + err.message });
@@ -56,7 +79,6 @@ module.exports = async function handler(req, res) {
           await sql`UPDATE users SET subscribed = true, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
         }
 
-        // Enregistrer le paiement (premier paiement + renouvellements)
         const isBillable = invoice.billing_reason === "subscription_cycle" ||
                            invoice.billing_reason === "subscription_create";
         if (isBillable && amount > 0) {
@@ -64,10 +86,20 @@ module.exports = async function handler(req, res) {
           if (usr) {
             await sql`
               INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
-              VALUES (${usr.id}, ${usr.plan || plan || "unknown"}, ${amount}, ${invoice.id}, "card", "success")
+              VALUES (${usr.id}, ${usr.plan || plan || "unknown"}, ${amount}, ${invoice.id}, 'card', 'success')
               ON CONFLICT (stripe_payment_id) DO NOTHING
             `;
           }
+        }
+        break;
+      }
+
+      case "invoice.payment_failed": {
+        const invoice = event.data.object;
+        const customerId = invoice.customer;
+        const [usr] = await sql`SELECT email, first_name FROM users WHERE stripe_customer = ${customerId}`;
+        if (usr?.email) {
+          sendFailedPayment(usr.email, usr.first_name || '').catch(() => {});
         }
         break;
       }
@@ -80,27 +112,25 @@ module.exports = async function handler(req, res) {
 
       case "payment_intent.succeeded": {
         const pi = event.data.object;
-        // Le paiement TWINT est traité dans pay-confirm.js (appelé côté client).
-        // Ce bloc gère uniquement la persistance en cas d'échec de pay-confirm.
         if (pi.metadata?.payment_type !== "twint") break;
         const userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
         const planId = pi.metadata?.plan_id;
         const DUR_DAYS = { month: 30, quarter: 90, year: 365 };
         const days = planId ? DUR_DAYS[planId] : null;
         if (userId && planId && days) {
-          // ON CONFLICT évite le double INSERT si pay-confirm.js a déjà traité
-          await sql`
+          // RETURNING id permet de détecter si c'est un nouvel enregistrement ou un doublon webhook
+          const inserted = await sql`
             INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
-            VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, "twint", "success")
+            VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
             ON CONFLICT (stripe_payment_id) DO NOTHING
+            RETURNING id
           `;
-          // Activer l'abonnement seulement si pas déjà fait par pay-confirm.js
-          const [u] = await sql`SELECT subscribed FROM users WHERE id = ${userId}`;
-          if (u && !u.subscribed) {
+          // Mettre à jour l'abonnement uniquement si c'est un nouveau paiement (pas un retry webhook)
+          // Fonctionne aussi pour les renouvellements (suppression du guard !u.subscribed)
+          if (inserted.length > 0) {
             const exp = new Date(Date.now() + days * 86400000);
             await sql`UPDATE users SET subscribed = true, plan = ${planId}, sub_expires_at = ${exp} WHERE id = ${userId}`;
           }
-          // Note : le crédit referral TWINT est géré dans pay-confirm.js (évite le double crédit)
         }
         break;
       }
@@ -109,8 +139,8 @@ module.exports = async function handler(req, res) {
         break;
     }
   } catch (e) {
-    console.error("Webhook handler error:", e);
-    return res.status(500).json({ error: e.message });
+    console.error("[webhook] handler error:", e);
+    return res.status(500).json({ error: "Erreur serveur." });
   }
 
   return res.json({ received: true });
