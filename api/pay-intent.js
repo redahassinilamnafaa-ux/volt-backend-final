@@ -18,7 +18,7 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
-  const { plan_id, method, return_url, promo_code } = req.body || {};
+  const { plan_id, method, promo_code } = req.body || {};
   const priceId = PRICE_IDS[plan_id];
   if (!priceId) return res.status(400).json({ error: "Plan invalide." });
 
@@ -44,6 +44,8 @@ module.exports = async function handler(req, res) {
     }
 
     // ── TWINT : PaymentIntent one-time ────────────────────────────────
+    // return_url n'est pas passé ici : Stripe l'exige seulement si confirm:true
+    // Il est passé côté frontend dans confirmTwintPayment()
     if (method === 'twint') {
       const price = await stripe.prices.retrieve(priceId);
       const paymentIntent = await stripe.paymentIntents.create({
@@ -57,7 +59,6 @@ module.exports = async function handler(req, res) {
           price_id: priceId,
           payment_type: 'twint',
         },
-        ...(return_url ? { return_url } : {}),
       });
       return res.json({
         client_secret:      paymentIntent.client_secret,
