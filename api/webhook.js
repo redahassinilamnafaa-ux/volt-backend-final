@@ -48,7 +48,7 @@ module.exports = async function handler(req, res) {
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
     if (!webhookSecret) {
-      console.error("[webhook] FATAL: STRIPE_WEBHOOK_SECRET manquant — définir dans les variables Vercel");
+      console.error("[webhook] FATAL: STRIPE_WEBHOOK_SECRET manquant");
       return res.status(500).json({ error: "Configuration webhook manquante." });
     }
     event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
@@ -118,13 +118,15 @@ module.exports = async function handler(req, res) {
         const DUR_DAYS = { month: 30, quarter: 90, year: 365 };
         const days = planId ? DUR_DAYS[planId] : null;
         if (userId && planId && days) {
-          await sql`
+          // RETURNING id détecte si c'est un nouveau paiement ou un retry webhook
+          const inserted = await sql`
             INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
             VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
             ON CONFLICT (stripe_payment_id) DO NOTHING
+            RETURNING id
           `;
-          const [u] = await sql`SELECT subscribed FROM users WHERE id = ${userId}`;
-          if (u && !u.subscribed) {
+          // Mise à jour de l'abonnement pour nouveaux paiements ET renouvellements
+          if (inserted.length > 0) {
             const exp = new Date(Date.now() + days * 86400000);
             await sql`UPDATE users SET subscribed = true, plan = ${planId}, sub_expires_at = ${exp} WHERE id = ${userId}`;
           }
