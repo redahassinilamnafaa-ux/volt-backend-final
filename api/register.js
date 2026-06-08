@@ -45,7 +45,7 @@ module.exports = async function handler(req, res) {
   const rl = rateLimit(`register:${getIp(req)}`, 5, 60 * 60 * 1000);
   if (!rl.ok) return res.status(429).json({ error: "Trop de tentatives. Réessaie dans une heure." });
 
-  const { firstName, lastName, email, phone, password, ref_code } = req.body || {};
+  const { firstName, lastName, email, phone, password } = req.body || {};
   if (!firstName || !lastName || !email || !password)
     return res.status(400).json({ error: "Champs obligatoires manquants." });
   if (password.length < 8)
@@ -61,19 +61,11 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: "Cet email est déjà utilisé." });
 
     const hash = await bcrypt.hash(password, 10);
-    const code = "VOLT" + Math.random().toString(36).slice(2, 8).toUpperCase();
-
-    let referredById = null;
-    if (ref_code) {
-      // Le parrain doit avoir un email vérifié (empêche comptes jetables intermédiaires)
-      const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${ref_code.toUpperCase()} AND email_verified = true`;
-      if (referrer) referredById = referrer.id;
-    }
 
     const [u] = await sql`
-      INSERT INTO users (first_name, last_name, email, phone, password, referral_code, referred_by)
-      VALUES (${firstName}, ${lastName}, ${email.toLowerCase()}, ${phone || null}, ${hash}, ${code}, ${referredById})
-      RETURNING id, first_name, last_name, email, phone, plan, subscribed, authorized, referral_code, free_months
+      INSERT INTO users (first_name, last_name, email, phone, password)
+      VALUES (${firstName}, ${lastName}, ${email.toLowerCase()}, ${phone || null}, ${hash})
+      RETURNING id, first_name, last_name, email, phone, plan, subscribed, authorized
     `;
 
     const verifyToken = crypto.randomBytes(32).toString("hex");
@@ -100,7 +92,6 @@ module.exports = async function handler(req, res) {
         email: u.email, phone: u.phone,
         initials: (u.first_name[0] + u.last_name[0]).toUpperCase(),
         plan: u.plan, subscribed: u.subscribed, authorized: u.authorized,
-        referral_code: u.referral_code, referral_count: 0, free_months: u.free_months,
         email_verified: false,
       }
     });
