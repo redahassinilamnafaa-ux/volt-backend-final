@@ -37,12 +37,15 @@ module.exports = async function handler(req, res) {
       const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
       const exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
 
+      const [uBefore] = await sql`SELECT referred_by, subscribed FROM users WHERE id = ${auth.id}`;
       await sql`UPDATE users SET subscribed = true, plan = ${pidPlan}, sub_expires_at = ${exp} WHERE id = ${auth.id}`;
       await sql`
         INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
         VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
         ON CONFLICT (stripe_payment_id) DO NOTHING
       `;
+      if (uBefore?.referred_by && !uBefore.subscribed && pidPlan === 'year')
+        await sql`UPDATE users SET free_months = LEAST(free_months + 1, 12) WHERE id = ${uBefore.referred_by}`;
 
       const [u2] = await sql`SELECT email, first_name FROM users WHERE id = ${auth.id}`;
       sendReceipt(u2?.email, u2?.first_name || '', pidPlan, pi.amount / 100, exp).catch(() => {});
@@ -61,7 +64,7 @@ module.exports = async function handler(req, res) {
   if (!months) return res.status(400).json({ error: "Plan invalide." });
 
   try {
-    const [u] = await sql`SELECT id, email, first_name, stripe_customer FROM users WHERE id = ${auth.id}`;
+    const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by, subscribed FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
     const pi = await stripe.paymentIntents.retrieve(payment_intent_id, {
@@ -69,6 +72,7 @@ module.exports = async function handler(req, res) {
     });
     if (pi.status !== 'succeeded') return res.status(400).json({ error: "Paiement non confirmé." });
 
+    // Vérifier que ce PaymentIntent appartient bien au customer de cet utilisateur
     if (pi.customer !== u.stripe_customer)
       return res.status(403).json({ error: "Non autorisé." });
 
@@ -91,6 +95,9 @@ module.exports = async function handler(req, res) {
       VALUES (${auth.id}, ${plan_id}, ${pi.amount / 100}, ${pi.id}, 'card', 'success')
       ON CONFLICT (stripe_payment_id) DO NOTHING
     `;
+
+    if (u.referred_by && !u.subscribed && plan_id === 'year')
+      await sql`UPDATE users SET free_months = LEAST(free_months + 1, 12) WHERE id = ${u.referred_by}`;
 
     sendReceipt(u.email, u.first_name || '', plan_id, pi.amount / 100, exp).catch(() => {});
 

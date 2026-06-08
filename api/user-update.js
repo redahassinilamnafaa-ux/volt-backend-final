@@ -1,6 +1,7 @@
 const cors            = require("../lib/cors");
 const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
+const { rateLimit }   = require("../lib/ratelimit");
 const Stripe          = require("stripe");
 const { Resend }      = require("resend");
 
@@ -18,9 +19,10 @@ module.exports = async function handler(req, res) {
     try {
       const [u] = await sql`
         SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.plan, u.subscribed,
-               u.authorized, u.email_verified, u.gym_id,
-               u.sub_expires_at, u.cancel_at_period_end, u.created_at,
-               g.name AS gym_name
+               u.authorized, u.email_verified, u.gym_id, u.referral_code, u.free_months,
+               u.sub_expires_at, u.cancel_at_period_end,
+               g.name AS gym_name,
+               (SELECT COUNT(*) FROM users WHERE referred_by = u.id AND subscribed = true) AS ref_count
         FROM users u LEFT JOIN gyms g ON u.gym_id = g.id
         WHERE u.id = ${auth.id}
       `;
@@ -36,9 +38,11 @@ module.exports = async function handler(req, res) {
           initials: ((u.first_name||'?')[0] + (u.last_name||'?')[0]).toUpperCase(),
           plan: u.plan, subscribed: u.subscribed, authorized: u.authorized,
           gym: u.gym_name || null, gym_id: u.gym_id,
+          referral_code: u.referral_code,
+          referral_count: parseInt(u.ref_count) || 0,
+          free_months: u.free_months,
           email_verified: u.email_verified,
           sub_expires_at: u.sub_expires_at ? new Date(u.sub_expires_at).toISOString() : null,
-          created_at: u.created_at ? new Date(u.created_at).toISOString() : null,
         }
       });
     } catch (e) {
@@ -182,6 +186,7 @@ module.exports = async function handler(req, res) {
       let invoice;
       if (invoice_id) {
         invoice = await stripe.invoices.retrieve(invoice_id);
+        // Vérifier que la facture appartient bien à ce client
         if (invoice.customer !== u.stripe_customer) {
           return res.status(403).json({ error: "Non autorisé." });
         }
@@ -205,6 +210,71 @@ module.exports = async function handler(req, res) {
       });
 
       return res.json({ ok: true });
+    } catch (e) {
+      console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
+    }
+  }
+
+
+  
+  // ── GET /api/user-update?action=check-promo ────────
+  if (req.method === "GET" && req.query.action === "check-promo") {
+    const code = req.query.code;
+    if (!code) return res.status(400).json({ error: "Code manquant." });
+    try {
+      const cleanCode = code.trim().toUpperCase();
+      const [referrer] = await sql`SELECT id FROM users WHERE referral_code = ${cleanCode} AND id != ${auth.id}`;
+      if (referrer) {
+        return res.json({ ok: true, message: "Code valide ! 1 mois offert." });
+      } else {
+        return res.status(404).json({ error: "Code invalide." });
+      }
+    } catch (e) {
+      return res.status(500).json({ error: "Erreur serveur." });
+    }
+  }
+
+  // ── POST /api/user-update?action=claim-referral ────────
+  if (req.method === "POST" && req.query.action === "claim-referral") {
+    // Rate limit : 1 réclamation par utilisateur par 24h
+    const rl = rateLimit(`claim-ref:${auth.id}`, 1, 24 * 60 * 60 * 1000);
+    if (!rl.ok) return res.status(429).json({ error: "Tu as déjà réclamé un mois aujourd'hui. Réessaie demain." });
+
+    try {
+      const [u] = await sql`SELECT free_months, sub_expires_at, stripe_customer FROM users WHERE id = ${auth.id}`;
+      if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
+      if (u.free_months <= 0) return res.status(400).json({ error: "Aucun mois gratuit disponible." });
+
+      const base = (u.sub_expires_at && new Date(u.sub_expires_at) > new Date()) ? new Date(u.sub_expires_at) : new Date();
+      const tYear = base.getUTCFullYear() + Math.floor((base.getUTCMonth() + 1) / 12);
+      const tMonth = (base.getUTCMonth() + 1) % 12;
+      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
+      let currentExp = new Date(Date.UTC(tYear, tMonth, Math.min(base.getUTCDate(), lastDay)));
+
+      if (u.stripe_customer) {
+        try {
+          const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+          const subs = await stripe.subscriptions.list({ customer: u.stripe_customer, status: 'active', limit: 1 });
+          if (subs.data.length > 0) {
+            const subId = subs.data[0].id;
+            const currentPeriodEnd = subs.data[0].current_period_end;
+            const newTrialEnd = currentPeriodEnd + (30 * 24 * 60 * 60);
+            await stripe.subscriptions.update(subId, { trial_end: newTrialEnd, proration_behavior: 'none' });
+            currentExp = new Date(newTrialEnd * 1000);
+          }
+        } catch (stripeErr) {
+          console.log("Avertissement Stripe (Paiement TWINT ou erreur):", stripeErr.message);
+        }
+      }
+
+      const [updatedUser] = await sql`
+        UPDATE users 
+        SET free_months = free_months - 1, sub_expires_at = ${currentExp}, subscribed = true
+        WHERE id = ${auth.id}
+        RETURNING free_months, sub_expires_at
+      `;
+
+      return res.json({ ok: true, free_months: updatedUser.free_months, sub_expires_at: updatedUser.sub_expires_at });
     } catch (e) {
       console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
