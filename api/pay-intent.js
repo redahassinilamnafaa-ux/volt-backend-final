@@ -57,7 +57,6 @@ module.exports = async function handler(req, res) {
           price_id: priceId,
           payment_type: 'twint',
         },
-        ...(return_url ? { return_url } : {}),
       });
       return res.json({
         client_secret:      paymentIntent.client_secret,
