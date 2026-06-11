@@ -56,7 +56,7 @@ module.exports = async function handler(req, res) {
   if (action === "members") {
     try {
       const rows = await sql`
-        SELECT u.id, u.first_name, u.last_name, u.email, u.plan, u.subscribed, u.authorized, u.created_at,
+        SELECT u.id, u.first_name, u.last_name, u.email, u.plan, u.subscribed, u.authorized, u.created_at, u.sub_expires_at,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans_month,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id) as scans_total,
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p WHERE p.user_id=u.id AND p.status='success') as revenue
@@ -64,19 +64,29 @@ module.exports = async function handler(req, res) {
         WHERE u.gym_id = ${gym_id}
         ORDER BY u.created_at DESC
       `;
-      return res.json({ members: rows.map(m => ({
-        id: m.id,
-        name: m.first_name + ' ' + m.last_name,
-        initials: ((m.first_name||'?')[0] + (m.last_name||'?')[0]).toUpperCase(),
-        email: m.email,
-        plan: m.plan,
-        subscribed: m.subscribed,
-        authorized: m.authorized,
-        scans_month: parseInt(m.scans_month) || 0,
-        scans_total: parseInt(m.scans_total) || 0,
-        revenue: parseFloat(m.revenue) || 0,
-        joined: new Date(m.created_at).toLocaleDateString('fr-CH', { day:'numeric', month:'short', year:'numeric' }),
-      })) });
+      const now = new Date();
+      const members = rows.map(m => {
+        let subscribed = m.subscribed;
+        if (subscribed && m.sub_expires_at && new Date(m.sub_expires_at) < now) {
+          subscribed = false;
+          sql`UPDATE users SET subscribed = false WHERE id = ${m.id}`.catch(() => {});
+        }
+        return {
+          id: m.id,
+          name: m.first_name + ' ' + m.last_name,
+          initials: ((m.first_name||'?')[0] + (m.last_name||'?')[0]).toUpperCase(),
+          email: m.email,
+          plan: m.plan,
+          subscribed,
+          authorized: m.authorized,
+          scans_month: parseInt(m.scans_month) || 0,
+          scans_total: parseInt(m.scans_total) || 0,
+          revenue: parseFloat(m.revenue) || 0,
+          joined: new Date(m.created_at).toLocaleDateString('fr-CH', { day:'numeric', month:'short', year:'numeric' }),
+          sub_expires_at: m.sub_expires_at ? new Date(m.sub_expires_at).toISOString() : null,
+        };
+      });
+      return res.json({ members });
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 

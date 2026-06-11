@@ -39,6 +39,7 @@ module.exports = async function handler(req, res) {
           free_months: u.free_months,
           email_verified: u.email_verified,
           sub_expires_at: u.sub_expires_at ? new Date(u.sub_expires_at).toISOString() : null,
+          created_at: u.created_at ? new Date(u.created_at).toISOString() : null,
         }
       });
     } catch (e) {
@@ -142,68 +143,27 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // ── GET /api/user-update?action=invoices → Liste des factures ───
+  // ── GET /api/user-update?action=invoices → Liste des paiements ──
   if (req.method === "GET" && req.query.action === "invoices") {
     try {
-      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-      const [u] = await sql`SELECT stripe_customer, email, first_name FROM users WHERE id = ${auth.id}`;
-      if (!u || !u.stripe_customer) return res.json({ invoices: [] });
-
-      const stripeInvoices = await stripe.invoices.list({
-        customer: u.stripe_customer,
-        limit: 24,
-        status: "paid",
-      });
-
-      const invoices = stripeInvoices.data.map(inv => ({
-        id: inv.id,
-        number: inv.number,
-        amount: (inv.amount_paid / 100).toFixed(2),
-        date: new Date(inv.created * 1000).toLocaleDateString("fr-CH"),
-        pdf_url: inv.invoice_pdf,
-        hosted_url: inv.hosted_invoice_url,
+      const PLAN_LABELS = { month: '1 MOIS', quarter: '3 MOIS', year: '12 MOIS' };
+      const rows = await sql`
+        SELECT id, plan, amount_chf, method, status, created_at
+        FROM payments
+        WHERE user_id = ${auth.id} AND status = 'success'
+        ORDER BY created_at DESC
+        LIMIT 24
+      `;
+      const invoices = rows.map(p => ({
+        id: p.id,
+        plan: PLAN_LABELS[p.plan] || p.plan,
+        amount: parseFloat(p.amount_chf).toFixed(2),
+        method: p.method,
+        date: new Date(p.created_at).toLocaleDateString('fr-CH', { day: 'numeric', month: 'short', year: 'numeric' }),
       }));
-
       return res.json({ invoices });
     } catch (e) {
-      return res.status(500).json({ error: "Erreur: " + e.message });
-    }
-  }
-
-  // ── POST /api/user-update?action=invoices → Envoie facture email ─
-  if (req.method === "POST" && req.query.action === "invoices") {
-    const { invoice_id } = req.body || {};
-    try {
-      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-      const [u] = await sql`SELECT stripe_customer, email, first_name FROM users WHERE id = ${auth.id}`;
-      if (!u || !u.stripe_customer)
-        return res.status(400).json({ error: "Aucun abonnement trouvé." });
-
-      let invoice;
-      if (invoice_id) {
-        invoice = await stripe.invoices.retrieve(invoice_id);
-      } else {
-        const list = await stripe.invoices.list({ customer: u.stripe_customer, limit: 1, status: "paid" });
-        invoice = list.data[0];
-      }
-
-      if (!invoice) return res.status(404).json({ error: "Aucune facture trouvée." });
-
-      const amount  = (invoice.amount_paid / 100).toFixed(2);
-      const date    = new Date(invoice.created * 1000).toLocaleDateString("fr-CH");
-      const pdfUrl  = invoice.invoice_pdf;
-      const hosted  = invoice.hosted_invoice_url;
-
-      await resend.emails.send({
-        from: "VOLT. <noreply@volt-energy.ch>",
-        to: u.email,
-        subject: `🧾 Ta facture VOLT. — CHF ${amount}`,
-        html: `<style>@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&display=swap');</style><div style="background:#060D2E;padding:40px 20px;font-family:Arial,sans-serif"><div style="max-width:480px;margin:0 auto;border-radius:24px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5)"><div style="background:linear-gradient(135deg,#060D2E 0%,#0A1A5C 40%,#0D2280 70%,#1a3aaa 100%);padding:40px 36px 36px"><div style="font-size:76px;font-weight:900;color:#ffffff;letter-spacing:-2px;line-height:.9;font-family:'Barlow Condensed','Arial Black',Arial,sans-serif">VOLT.</div></div><div style="background:#0f1729;padding:32px 36px"><div style="font-size:22px;font-weight:800;color:#fff;margin-bottom:20px">Ta facture 🧾</div><div style="font-size:15px;color:rgba(255,255,255,0.6);line-height:1.7;margin-bottom:24px">Salut <strong style="color:#fff">${u.first_name}</strong>,<br/>Voici ta facture VOLT. du <strong style="color:#fff">${date}</strong>.</div><div style="background:rgba(255,255,255,.05);border-radius:16px;padding:20px 24px;margin-bottom:24px;border:1px solid rgba(255,255,255,.08)"><div style="font-size:32px;font-weight:900;color:#fff">CHF ${amount}</div><div style="font-size:13px;color:rgba(255,255,255,.4)">${invoice.number || invoice.id}</div></div><a href="${hosted || pdfUrl}" style="display:block;background:linear-gradient(135deg,#003FCC,#0057FF);color:#fff;text-align:center;padding:16px 24px;border-radius:50px;font-size:18px;font-weight:900;text-decoration:none;margin-bottom:12px">VOIR MA FACTURE →</a>${pdfUrl ? '<a href="'+pdfUrl+'" style="display:block;background:rgba(255,255,255,.06);color:rgba(255,255,255,.6);text-align:center;padding:14px 24px;border-radius:50px;font-size:15px;font-weight:700;text-decoration:none;border:1px solid rgba(255,255,255,.1)">Télécharger PDF ↓</a>' : ''}</div><div style="background:#080e1f;padding:18px 36px 24px;border-top:1px solid rgba(255,255,255,0.06)"><div style="font-size:12px;color:rgba(255,255,255,0.2)">VOLT. Energy · Crissier · Switzerland</div></div></div></div>`
-      });
-
-      return res.json({ ok: true });
-    } catch (e) {
-      return res.status(500).json({ error: "Erreur: " + e.message });
+      console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 
