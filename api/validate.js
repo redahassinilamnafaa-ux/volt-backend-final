@@ -86,11 +86,7 @@ module.exports = async function handler(req, res) {
       }
     } catch (e) {
       console.error("[vend]", body.action, e);
-      // DIAGNOSTIC TEMPORAIRE — a retirer une fois la cause identifiee. Les
-      // journaux d'execution Vercel sont difficiles a consulter depuis cet
-      // environnement ; exposer le message d'erreur directement permet de
-      // diagnostiquer sans cet detour.
-      return res.status(500).json({ ok: false, error: "SERVER_ERROR", detail: String(e && e.message || e) });
+      return res.status(500).json({ ok: false, error: "SERVER_ERROR" });
     }
   }
 
