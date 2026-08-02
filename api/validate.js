@@ -46,6 +46,23 @@ module.exports = async function handler(req, res) {
       if (!globalSecret || providedSecret !== globalSecret) return res.status(401).json({ result: "DENIED", reason: "SECRET_INVALID" });
     }
 
+    // ── 1.5 Une distribution doit etre EN ATTENTE sur cette machine ────────
+    // Remplace la garde "anti-gaspillage QR" qui vivait cote app CM30 (elle y
+    // testait la reception d'un VEND_REQUEST MDB). Le backend est desormais le
+    // seul a connaitre l'etat reel de la borne (la tablette l'y declare via
+    // POST /api/vend, action "open"). Sans machine_id (client historique), ce
+    // controle est ignore et le comportement reste celui d'avant.
+    let pendingVend = null;
+    if (machine_id) {
+      const [pv] = await sql`
+        SELECT order_id, product_name FROM vends
+        WHERE machine_id = ${machine_id} AND state = 'PENDING' AND expires_at > NOW()
+        ORDER BY created_at DESC LIMIT 1
+      `;
+      if (!pv) return res.json({ result: "DENIED", reason: "NO_PENDING_VEND" });
+      pendingVend = pv;
+    }
+
     // ── 2. Lecture Token + User + Cooldown ────────────────
     const [row] = await sql`
       SELECT u.*, cd.expires_at AS cd_expires
@@ -84,13 +101,37 @@ module.exports = async function handler(req, res) {
       if (!match) return res.json({ result: "DENIED", reason: "WRONG_GYM" });
     }
 
-    // ── 4. Enregistrement & Réponse ────────────────────────
+    const userName = `${row.first_name} ${row.last_name}`;
+
+    // ── 4a. Machine avec distribution en attente : RESERVATION ─────────────
+    // Rien n'est debite ici. Le cooldown, l'ecriture dans `scans` et la
+    // suppression du token n'interviennent qu'au commit (api/vend.js), une
+    // fois la boisson reellement servie.
+    if (pendingVend) {
+      const updated = await sql`
+        UPDATE vends
+        SET state = 'AUTHORIZED', user_id = ${String(row.id)}, user_name = ${userName},
+            qr_token = ${qr_token}, gym_id = ${resolvedGymId}, updated_at = NOW()
+        WHERE order_id = ${pendingVend.order_id} AND state = 'PENDING'
+        RETURNING order_id
+      `;
+      if (!updated.length) {
+        // Un autre scan a gagne la course entre la lecture et l'ecriture.
+        return res.json({ result: "DENIED", reason: "NO_PENDING_VEND" });
+      }
+      return res.json({
+        result: "APPROVED", user_name: userName, plan: row.plan,
+        order_id: pendingVend.order_id, product_name: pendingVend.product_name,
+      });
+    }
+
+    // ── 4b. Pas de machine_id (client historique) : comportement inchange ──
     const exp = new Date(now.getTime() + CD * 1000);
     try { await sql`INSERT INTO scans (user_id, gym_id, machine_id) VALUES (${row.id}, ${resolvedGymId}, ${machine_id || null})`; } catch(e) {}
     await sql`INSERT INTO cooldowns (user_id, expires_at) VALUES (${row.id}, ${exp}) ON CONFLICT (user_id) DO UPDATE SET expires_at = ${exp}`;
     await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`;
 
-    return res.json({ result: "APPROVED", user_name: `${row.first_name} ${row.last_name}`, plan: row.plan });
+    return res.json({ result: "APPROVED", user_name: userName, plan: row.plan });
 
   } catch (e) {
     console.error("validate error:", e);
