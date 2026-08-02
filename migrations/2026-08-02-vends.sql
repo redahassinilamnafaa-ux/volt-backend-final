@@ -22,7 +22,15 @@ CREATE TABLE IF NOT EXISTS vends (
   -- Resolu a l'ouverture depuis machines.gym_id (comme dans validate.js) :
   -- permet a commit() d'ecrire scans/cooldowns avec le meme gym_id que le
   -- reste du systeme (rapports, filtrage par filiale).
-  gym_id       INTEGER,
+  --
+  -- TEXTE et non INTEGER : le id des gyms circule en UUID en production
+  -- (constate le 2026-08-02 via l'echec d'un INSERT reel : "invalid input
+  -- syntax for type integer" sur une valeur UUID). Le type INTEGER de
+  -- `machines.gym_id` dans la migration admin.js ne s'est jamais applique a
+  -- la table reelle (deja existante, CREATE TABLE IF NOT EXISTS ignore le
+  -- type demande) ; le code historique de scans.gym_id accepte deja ces
+  -- valeurs UUID sans encombre.
+  gym_id       TEXT,
   product_name TEXT,
   amount_cents INTEGER     NOT NULL DEFAULT 0,
 
