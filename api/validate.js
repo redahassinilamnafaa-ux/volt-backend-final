@@ -159,9 +159,20 @@ module.exports = async function handler(req, res) {
     const userName = `${row.first_name} ${row.last_name}`;
 
     // ── 4a. Machine avec distribution en attente : RESERVATION ─────────────
-    // Rien n'est debite ici. Le cooldown, l'ecriture dans `scans` et la
-    // suppression du token n'interviennent qu'au commit (action "commit"
-    // ci-dessus), une fois la boisson reellement servie.
+    // Le COOLDOWN et l'ecriture dans `scans` n'interviennent qu'au commit
+    // (action "commit" ci-dessus), une fois la boisson reellement servie : un
+    // echec machine ne coute rien au client.
+    //
+    // Le TOKEN QR, en revanche, est supprime ICI, des l'autorisation, PAS au
+    // commit. Ce sont deux choses distinctes : sans cette suppression
+    // immediate, le meme token restait valide pendant toute la duree de la
+    // distribution (jusqu'a 30s) et pouvait etre represente — capture d'ecran,
+    // ou meme telephone repose devant une AUTRE borne — pour autoriser une
+    // deuxieme distribution avant que la premiere ne soit confirmee. Un QR a
+    // usage unique doit rester a usage unique meme si la machine echoue
+    // ensuite a servir ; dans ce cas le client garde son credit (pas de
+    // cooldown) mais doit reafficher un QR frais depuis son app pour
+    // reessayer — comportement volontaire, pas un oubli.
     if (pendingVend) {
       const updated = await sql`
         UPDATE vends
@@ -174,6 +185,7 @@ module.exports = async function handler(req, res) {
         // Un autre scan a gagne la course entre la lecture et l'ecriture.
         return res.json({ result: "DENIED", reason: "NO_PENDING_VEND" });
       }
+      await sql`DELETE FROM qr_tokens WHERE token = ${qr_token}`;
       return res.json({
         result: "APPROVED", user_name: userName, plan: row.plan,
         order_id: pendingVend.order_id, product_name: pendingVend.product_name,
@@ -288,6 +300,10 @@ async function vendCommit(body, res) {
     INSERT INTO cooldowns (user_id, expires_at) VALUES (${v.user_id}, ${cooldownExp})
     ON CONFLICT (user_id) DO UPDATE SET expires_at = ${cooldownExp}
   `;
+  // Filet defensif : le token est deja supprime au moment du scan (voir plus
+  // haut dans ce fichier, action de validation QR). Ce DELETE ne trouve donc
+  // normalement plus rien — conserve au cas ou un futur chemin marquerait un
+  // vend AUTHORIZED sans passer par ce code.
   if (v.qr_token) {
     await sql`DELETE FROM qr_tokens WHERE token = ${v.qr_token}`;
   }
