@@ -1,6 +1,7 @@
 const sql    = require("../lib/db");
 const Stripe = require("stripe");
 const { sendExpiryReminder, sendFailedPayment } = require("../lib/email");
+const { computeSubscription, startOfDayZurich, endOfDayZurich } = require("../lib/subscription");
 
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -68,15 +69,16 @@ module.exports = async function handler(req, res) {
         const invoice = event.data.object;
         if (!invoice.subscription) break;
         const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
-        const periodEnd = new Date(subscription.current_period_end * 1000);
+        const periodStart = startOfDayZurich(new Date(subscription.current_period_start * 1000));
+        const periodEnd   = endOfDayZurich(new Date(subscription.current_period_end * 1000));
         const plan = subscription.metadata?.plan;
         const amount = invoice.amount_paid / 100;
         const customerId = invoice.customer;
 
         if (plan) {
-          await sql`UPDATE users SET subscribed = true, plan = ${plan}, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
+          await sql`UPDATE users SET subscribed = true, plan = ${plan}, sub_started_at = ${periodStart}, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
         } else {
-          await sql`UPDATE users SET subscribed = true, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
+          await sql`UPDATE users SET subscribed = true, sub_started_at = ${periodStart}, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
         }
 
         const isBillable = invoice.billing_reason === "subscription_cycle" ||
@@ -115,18 +117,31 @@ module.exports = async function handler(req, res) {
         if (pi.metadata?.payment_type !== "twint") break;
         const userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
         const planId = pi.metadata?.plan_id;
-        const DUR_DAYS = { month: 30, quarter: 90, year: 365 };
-        const days = planId ? DUR_DAYS[planId] : null;
-        if (userId && planId && days) {
-          await sql`
+        if (userId && planId) {
+          // Idempotence : /api/pay-confirm et ce webhook reçoivent le même paiement.
+          // La ligne payments fait office de verrou -> un seul des deux calcule les dates.
+          const inserted = await sql`
             INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
             VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
             ON CONFLICT (stripe_payment_id) DO NOTHING
+            RETURNING id
           `;
-          const [u] = await sql`SELECT subscribed FROM users WHERE id = ${userId}`;
-          if (u && !u.subscribed) {
-            const exp = new Date(Date.now() + days * 86400000);
-            await sql`UPDATE users SET subscribed = true, plan = ${planId}, sub_expires_at = ${exp} WHERE id = ${userId}`;
+          if (inserted.length > 0) {
+            const [u] = await sql`SELECT sub_expires_at FROM users WHERE id = ${userId}`;
+            try {
+              const { startedAt, expiresAt } = computeSubscription({
+                plan: planId,
+                currentExpires: u?.sub_expires_at,
+                extend: true,
+              });
+              await sql`
+                UPDATE users
+                SET subscribed = true, plan = ${planId},
+                    sub_started_at = ${startedAt}, sub_expires_at = ${expiresAt}
+                WHERE id = ${userId}`;
+            } catch (planErr) {
+              console.error("[webhook] plan inconnu:", planId);
+            }
           }
         }
         break;

@@ -3,6 +3,7 @@ const sql    = require("../lib/db");
 const bcrypt = require("bcryptjs");
 const { Resend } = require("resend");
 const { signToken, requireAuth } = require("../lib/auth");
+const { computeSubscription, daysLeft, parseDayInput, fmtCH } = require("../lib/subscription");
 
 module.exports = async function handler(req, res) {
   cors(req, res);
@@ -73,6 +74,7 @@ module.exports = async function handler(req, res) {
     try {
       const rows = await sql`
         SELECT u.id,u.first_name,u.last_name,u.email,u.plan,u.subscribed,u.authorized,u.email_verified,u.created_at,
+          u.sub_started_at, u.sub_expires_at,
           g.name as gym_name, g.filiale as gym_filiale,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p WHERE p.user_id=u.id AND p.status='success') as revenue
@@ -89,7 +91,12 @@ module.exports = async function handler(req, res) {
         filiale:c.gym_filiale||'',
         scans:parseInt(c.scans)||0,
         revenue:parseFloat(c.revenue)||0,
-        joined:new Date(c.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'})
+        joined:new Date(c.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'}),
+        sub_started_at: c.sub_started_at ? new Date(c.sub_started_at).toISOString() : null,
+        sub_expires_at: c.sub_expires_at ? new Date(c.sub_expires_at).toISOString() : null,
+        sub_start: fmtCH(c.sub_started_at),
+        sub_end:   fmtCH(c.sub_expires_at),
+        days_left: c.subscribed ? daysLeft(c.sub_expires_at) : null
       })) });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
@@ -106,22 +113,55 @@ module.exports = async function handler(req, res) {
 
   // ── subscribe (activer/désactiver manuellement) ────────
   if (action === "subscribe" && req.method === "POST") {
-    const { user_id, subscribed, plan } = req.body||{};
+    const { user_id, subscribed, plan, start_date, extend } = req.body||{};
     if (!user_id) return res.status(400).json({ error:"user_id requis." });
     try {
-      if (subscribed) {
-        const durMonths = { month:1, quarter:3, year:12 };
-        const months = durMonths[plan] || 1;
-        const now = new Date();
-        const tYear = now.getUTCFullYear() + Math.floor((now.getUTCMonth() + months) / 12);
-        const tMonth = (now.getUTCMonth() + months) % 12;
-        const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
-        const exp = new Date(Date.UTC(tYear, tMonth, Math.min(now.getUTCDate(), lastDay)));
-        await sql`UPDATE users SET subscribed=true, plan=${plan||'month'}, sub_expires_at=${exp} WHERE id=${user_id}`;
-      } else {
+      await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_started_at TIMESTAMPTZ`.catch(()=>{});
+
+      if (!subscribed) {
+        // Résiliation : on coupe l'accès mais on GARDE les dates pour l'historique.
         await sql`UPDATE users SET subscribed=false WHERE id=${user_id}`;
+        return res.json({ ok:true });
       }
-      return res.json({ ok:true });
+
+      const chosenPlan = plan || 'month';
+      const [cur] = await sql`SELECT sub_expires_at FROM users WHERE id=${user_id}`;
+      if (!cur) return res.status(404).json({ error:"Client introuvable." });
+
+      let startAt = null;
+      if (start_date) {
+        startAt = parseDayInput(start_date);
+        if (!startAt) return res.status(400).json({ error:"Date de début invalide (format attendu AAAA-MM-JJ)." });
+      }
+
+      let dates;
+      try {
+        dates = computeSubscription({
+          plan: chosenPlan,
+          startAt,
+          currentExpires: cur.sub_expires_at,
+          extend: extend === true && !start_date,   // une date imposée l'emporte sur la prolongation
+        });
+      } catch { return res.status(400).json({ error:"Plan invalide." }); }
+
+      // Écriture unique et définitive : ces deux dates ne bougeront plus.
+      await sql`
+        UPDATE users
+        SET subscribed = true,
+            plan = ${chosenPlan},
+            sub_started_at = ${dates.startedAt},
+            sub_expires_at = ${dates.expiresAt}
+        WHERE id = ${user_id}`;
+
+      return res.json({
+        ok: true,
+        extended: dates.extended,
+        days: dates.days,
+        sub_started_at: dates.startedAt.toISOString(),
+        sub_expires_at: dates.expiresAt.toISOString(),
+        sub_start: fmtCH(dates.startedAt),
+        sub_end:   fmtCH(dates.expiresAt),
+      });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
@@ -282,6 +322,13 @@ module.exports = async function handler(req, res) {
     await run("gyms.active",         sql`ALTER TABLE gyms ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true`);
     await run("users.gym_id",        sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
     await run("users.authorized",    sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT true`);
+    await run("users.sub_started_at", sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_started_at TIMESTAMPTZ`);
+    await run("backfill sub_started_at", sql`
+      UPDATE users SET sub_started_at = sub_expires_at - (
+        CASE plan WHEN 'year' THEN INTERVAL '12 months'
+                  WHEN 'quarter' THEN INTERVAL '3 months'
+                  ELSE INTERVAL '1 month' END)
+      WHERE sub_started_at IS NULL AND sub_expires_at IS NOT NULL`);
     await run("scans.gym_id",        sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
     await run("scans.machine_id",    sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
 

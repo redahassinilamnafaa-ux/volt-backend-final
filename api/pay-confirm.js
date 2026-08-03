@@ -4,8 +4,7 @@ const { requireAuth } = require("../lib/auth");
 const Stripe          = require("stripe");
 const stripe          = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { sendReceipt } = require("../lib/email");
-
-const DUR = { month: 1, quarter: 3, year: 12 };
+const { computeSubscription, monthsForPlan, startOfDayZurich, endOfDayZurich } = require("../lib/subscription");
 
 module.exports = async function handler(req, res) {
   cors(req, res);
@@ -28,17 +27,26 @@ module.exports = async function handler(req, res) {
       if (String(pi.metadata.volt_user_id) !== String(auth.id))
         return res.status(403).json({ error: "Non autorisé." });
 
-      const months = DUR[pidPlan];
-      if (!months) return res.status(400).json({ error: "Plan invalide." });
+      if (!monthsForPlan(pidPlan)) return res.status(400).json({ error: "Plan invalide." });
 
-      const _now = new Date();
-      const tYear = _now.getUTCFullYear() + Math.floor((_now.getUTCMonth() + months) / 12);
-      const tMonth = (_now.getUTCMonth() + months) % 12;
-      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
-      const exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
+      const [uBefore] = await sql`SELECT referred_by, subscribed, sub_expires_at FROM users WHERE id = ${auth.id}`;
 
-      const [uBefore] = await sql`SELECT referred_by, subscribed FROM users WHERE id = ${auth.id}`;
-      await sql`UPDATE users SET subscribed = true, plan = ${pidPlan}, sub_expires_at = ${exp} WHERE id = ${auth.id}`;
+      // Idempotence : si ce PaymentIntent a déjà été encaissé, on ne recalcule RIEN.
+      const [already] = await sql`SELECT id FROM payments WHERE stripe_payment_id = ${pi.id}`;
+      if (already) return res.json({ ok: true, already: true });
+
+      const { startedAt, expiresAt } = computeSubscription({
+        plan: pidPlan,
+        currentExpires: uBefore?.sub_expires_at,
+        extend: true,               // renouvellement anticipé : le client ne perd pas ses jours restants
+      });
+      const exp = expiresAt;
+
+      await sql`
+        UPDATE users
+        SET subscribed = true, plan = ${pidPlan},
+            sub_started_at = ${startedAt}, sub_expires_at = ${expiresAt}
+        WHERE id = ${auth.id}`;
       await sql`
         INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
         VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
@@ -60,11 +68,10 @@ module.exports = async function handler(req, res) {
   if (!payment_intent_id || !plan_id)
     return res.status(400).json({ error: "Paramètres manquants." });
 
-  const months = DUR[plan_id];
-  if (!months) return res.status(400).json({ error: "Plan invalide." });
+  if (!monthsForPlan(plan_id)) return res.status(400).json({ error: "Plan invalide." });
 
   try {
-    const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by, subscribed FROM users WHERE id = ${auth.id}`;
+    const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by, subscribed, sub_expires_at FROM users WHERE id = ${auth.id}`;
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
 
     const pi = await stripe.paymentIntents.retrieve(payment_intent_id, {
@@ -76,19 +83,32 @@ module.exports = async function handler(req, res) {
     if (pi.customer !== u.stripe_customer)
       return res.status(403).json({ error: "Non autorisé." });
 
+    // Idempotence : ce paiement a déjà été traité -> on ne retouche pas les dates.
+    const [alreadyCard] = await sql`SELECT id FROM payments WHERE stripe_payment_id = ${pi.id}`;
+    if (alreadyCard) return res.json({ ok: true, already: true });
+
     const sub = pi.invoice?.subscription;
-    let exp;
+    let startedAt, exp;
     if (sub) {
-      exp = new Date(sub.current_period_end * 1000);
+      // Abonnement Stripe : Stripe est la source de vérité pour la période.
+      startedAt = startOfDayZurich(new Date(sub.current_period_start * 1000));
+      exp       = endOfDayZurich(new Date(sub.current_period_end * 1000));
     } else {
-      const _now = new Date();
-      const tYear  = _now.getUTCFullYear() + Math.floor((_now.getUTCMonth() + months) / 12);
-      const tMonth = (_now.getUTCMonth() + months) % 12;
-      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
-      exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
+      const d = computeSubscription({
+        plan: plan_id,
+        currentExpires: u.sub_expires_at,
+        extend: true,
+      });
+      startedAt = d.startedAt;
+      exp       = d.expiresAt;
     }
 
-    await sql`UPDATE users SET subscribed = true, plan = ${plan_id}, sub_expires_at = ${exp}, stripe_customer = ${u.stripe_customer} WHERE id = ${auth.id}`;
+    await sql`
+      UPDATE users
+      SET subscribed = true, plan = ${plan_id},
+          sub_started_at = ${startedAt}, sub_expires_at = ${exp},
+          stripe_customer = ${u.stripe_customer}
+      WHERE id = ${auth.id}`;
 
     await sql`
       INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)

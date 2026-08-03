@@ -37,7 +37,7 @@ module.exports = async function handler(req, res) {
     // Mettre à jour sub_expires_at avec la vraie date de fin de période Stripe
     // (évite que l'accès reste actif indéfiniment après la date calculée localement)
     const periodEnd = new Date(sub.current_period_end * 1000);
-    await sql`UPDATE users SET sub_expires_at = ${periodEnd} WHERE id = ${auth.id}`;
+    await sql`UPDATE users SET sub_expires_at = ${endOfDayZurich(periodEnd)} WHERE id = ${auth.id}`;
 
     return res.json({
       ok: true,

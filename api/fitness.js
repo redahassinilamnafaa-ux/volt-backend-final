@@ -2,6 +2,7 @@ const cors            = require("../lib/cors");
 const sql             = require("../lib/db");
 const { requireAuth, signToken } = require("../lib/auth");
 const bcrypt          = require("bcryptjs");
+const { daysLeft, fmtCH } = require("../lib/subscription");
 
 module.exports = async function handler(req, res) {
   cors(req, res);
@@ -55,8 +56,10 @@ module.exports = async function handler(req, res) {
   // ── MEMBRES du fitness ─────────────────────────────────
   if (action === "members") {
     try {
+      await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_started_at TIMESTAMPTZ`.catch(()=>{});
       const rows = await sql`
         SELECT u.id, u.first_name, u.last_name, u.email, u.plan, u.subscribed, u.authorized, u.created_at,
+          u.sub_started_at, u.sub_expires_at,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans_month,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id) as scans_total,
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p WHERE p.user_id=u.id AND p.status='success') as revenue
@@ -76,6 +79,11 @@ module.exports = async function handler(req, res) {
         scans_total: parseInt(m.scans_total) || 0,
         revenue: parseFloat(m.revenue) || 0,
         joined: new Date(m.created_at).toLocaleDateString('fr-CH', { day:'numeric', month:'short', year:'numeric' }),
+        sub_started_at: m.sub_started_at ? new Date(m.sub_started_at).toISOString() : null,
+        sub_expires_at: m.sub_expires_at ? new Date(m.sub_expires_at).toISOString() : null,
+        sub_start: fmtCH(m.sub_started_at),
+        sub_end:   fmtCH(m.sub_expires_at),
+        days_left: m.subscribed ? daysLeft(m.sub_expires_at) : null,
       })) });
     } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }

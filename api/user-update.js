@@ -4,6 +4,7 @@ const { requireAuth } = require("../lib/auth");
 const { rateLimit }   = require("../lib/ratelimit");
 const Stripe          = require("stripe");
 const { Resend }      = require("resend");
+const { computeSubscription, endOfDayZurich } = require("../lib/subscription");
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -20,7 +21,7 @@ module.exports = async function handler(req, res) {
       const [u] = await sql`
         SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.plan, u.subscribed,
                u.authorized, u.email_verified, u.gym_id, u.referral_code, u.free_months,
-               u.sub_expires_at, u.cancel_at_period_end,
+               u.sub_expires_at, u.sub_started_at, u.created_at, u.cancel_at_period_end,
                g.name AS gym_name,
                (SELECT COUNT(*) FROM users WHERE referred_by = u.id AND subscribed = true) AS ref_count
         FROM users u LEFT JOIN gyms g ON u.gym_id = g.id
@@ -43,6 +44,8 @@ module.exports = async function handler(req, res) {
           free_months: u.free_months,
           email_verified: u.email_verified,
           sub_expires_at: u.sub_expires_at ? new Date(u.sub_expires_at).toISOString() : null,
+          sub_started_at: u.sub_started_at ? new Date(u.sub_started_at).toISOString() : null,
+          created_at:     u.created_at     ? new Date(u.created_at).toISOString()     : null,
         }
       });
     } catch (e) {
@@ -200,11 +203,13 @@ module.exports = async function handler(req, res) {
       if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
       if (u.free_months <= 0) return res.status(400).json({ error: "Aucun mois gratuit disponible." });
 
-      const base = (u.sub_expires_at && new Date(u.sub_expires_at) > new Date()) ? new Date(u.sub_expires_at) : new Date();
-      const tYear = base.getUTCFullYear() + Math.floor((base.getUTCMonth() + 1) / 12);
-      const tMonth = (base.getUTCMonth() + 1) % 12;
-      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
-      let currentExp = new Date(Date.UTC(tYear, tMonth, Math.min(base.getUTCDate(), lastDay)));
+      const _d = computeSubscription({
+        plan: 'month',
+        currentExpires: u.sub_expires_at,
+        extend: true,
+      });
+      let currentStart = _d.startedAt;
+      let currentExp   = _d.expiresAt;
 
       if (u.stripe_customer) {
         try {
@@ -215,7 +220,7 @@ module.exports = async function handler(req, res) {
             const currentPeriodEnd = subs.data[0].current_period_end;
             const newTrialEnd = currentPeriodEnd + (30 * 24 * 60 * 60);
             await stripe.subscriptions.update(subId, { trial_end: newTrialEnd, proration_behavior: 'none' });
-            currentExp = new Date(newTrialEnd * 1000);
+            currentExp = endOfDayZurich(new Date(newTrialEnd * 1000));
           }
         } catch (stripeErr) {
           console.log("Avertissement Stripe (Paiement TWINT ou erreur):", stripeErr.message);
@@ -224,9 +229,12 @@ module.exports = async function handler(req, res) {
 
       const [updatedUser] = await sql`
         UPDATE users 
-        SET free_months = free_months - 1, sub_expires_at = ${currentExp}, subscribed = true
+        SET free_months = free_months - 1,
+            sub_started_at = COALESCE(sub_started_at, ${currentStart}),
+            sub_expires_at = ${currentExp},
+            subscribed = true
         WHERE id = ${auth.id}
-        RETURNING free_months, sub_expires_at
+        RETURNING free_months, sub_started_at, sub_expires_at
       `;
 
       return res.json({ ok: true, free_months: updatedUser.free_months, sub_expires_at: updatedUser.sub_expires_at });

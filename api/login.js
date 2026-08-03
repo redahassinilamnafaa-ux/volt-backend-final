@@ -102,6 +102,7 @@ module.exports = async function handler(req, res) {
       SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.password,
              u.plan, u.subscribed, u.authorized, u.email_verified,
              u.gym_id, u.referral_code, u.free_months, u.sub_expires_at,
+             u.sub_started_at, u.created_at,
              g.name AS gym_name,
              (SELECT COUNT(*) FROM users WHERE referred_by = u.id AND subscribed = true) AS ref_count
       FROM users u LEFT JOIN gyms g ON u.gym_id = g.id
@@ -148,6 +149,8 @@ module.exports = async function handler(req, res) {
         free_months: u.free_months,
         email_verified: true,
         sub_expires_at: u.sub_expires_at ? new Date(u.sub_expires_at).toISOString() : null,
+        sub_started_at: u.sub_started_at ? new Date(u.sub_started_at).toISOString() : null,
+        created_at:     u.created_at     ? new Date(u.created_at).toISOString()     : null,
       }
     });
 
