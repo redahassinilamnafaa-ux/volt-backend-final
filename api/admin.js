@@ -135,7 +135,7 @@ module.exports = async function handler(req, res) {
         days: e.days,
         note: e.note,
       })) });
-    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+    } catch(e) { console.error("[admin][sub-history]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   if (action === "access" && req.method === "POST") {
