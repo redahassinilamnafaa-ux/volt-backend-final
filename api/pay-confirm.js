@@ -5,6 +5,7 @@ const Stripe          = require("stripe");
 const stripe          = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { sendReceipt } = require("../lib/email");
 const { computeSubscription, monthsForPlan, startOfDayZurich, endOfDayZurich } = require("../lib/subscription");
+const { logSubEvent } = require("../lib/subEvents");
 
 module.exports = async function handler(req, res) {
   cors(req, res);
@@ -52,6 +53,11 @@ module.exports = async function handler(req, res) {
         VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
         ON CONFLICT (stripe_payment_id) DO NOTHING
       `;
+      await logSubEvent(sql, {
+        user_id: auth.id, event_type: 'payment', source: 'twint',
+        plan: pidPlan, sub_started_at: startedAt, sub_expires_at: expiresAt,
+        note: `CHF ${(pi.amount/100).toFixed(2)} — PaymentIntent ${pi.id}`,
+      });
       if (uBefore?.referred_by && !uBefore.subscribed && pidPlan === 'year')
         await sql`UPDATE users SET free_months = LEAST(free_months + 1, 12) WHERE id = ${uBefore.referred_by}`;
 
@@ -115,6 +121,11 @@ module.exports = async function handler(req, res) {
       VALUES (${auth.id}, ${plan_id}, ${pi.amount / 100}, ${pi.id}, 'card', 'success')
       ON CONFLICT (stripe_payment_id) DO NOTHING
     `;
+    await logSubEvent(sql, {
+      user_id: auth.id, event_type: 'payment', source: 'stripe',
+      plan: plan_id, sub_started_at: startedAt, sub_expires_at: exp,
+      note: `CHF ${(pi.amount/100).toFixed(2)} — PaymentIntent ${pi.id}`,
+    });
 
     if (u.referred_by && !u.subscribed && plan_id === 'year')
       await sql`UPDATE users SET free_months = LEAST(free_months + 1, 12) WHERE id = ${u.referred_by}`;

@@ -3,8 +3,8 @@ const sql    = require("../lib/db");
 const bcrypt = require("bcryptjs");
 const { Resend } = require("resend");
 const { signToken, requireAuth } = require("../lib/auth");
-const { computeSubscription, daysLeft, parseDayInput, fmtCH } = require("../lib/subscription");
-
+const { computeSubscription, computeCustomWindow, daysLeft, parseDayInput, fmtCH } = require("../lib/subscription");
+const { ensureSubEventsTable, logSubEvent } = require("../lib/subEvents");
 module.exports = async function handler(req, res) {
   cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -101,7 +101,43 @@ module.exports = async function handler(req, res) {
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
-  // ── access (bloquer/débloquer un client) ───────────────
+  // ── historique d'abonnement d'un client (lisible, chronologique) ──
+  if (action === "sub-history" && req.method === "GET") {
+    const { user_id } = req.query;
+    if (!user_id) return res.status(400).json({ error:"user_id requis." });
+    try {
+      await ensureSubEventsTable(sql);
+      const rows = await sql`
+        SELECT event_type, source, plan, days, sub_started_at, sub_expires_at, note, created_at
+        FROM subscription_events
+        WHERE user_id = ${user_id}
+        ORDER BY created_at DESC
+        LIMIT 100`;
+
+      const LABELS = {
+        admin_activate: '✅ Activé par l\'admin',
+        admin_cancel:   '⛔ Résilié par l\'admin',
+        payment:        '💳 Paiement reçu',
+        renewal:        '🔄 Renouvelé',
+        referral_bonus: '🎁 Mois offert (parrainage)',
+        expired:        '⏳ Expiré automatiquement',
+      };
+      const PLAN_LABELS = { month:'Mensuel', quarter:'Trimestriel', year:'Annuel', custom:'Jours offerts' };
+
+      return res.json({ events: rows.map(e => ({
+        when: new Date(e.created_at).toLocaleString('fr-CH', { timeZone:'Europe/Zurich', day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' }),
+        label: LABELS[e.event_type] || e.event_type,
+        source: e.source,
+        plan_label: PLAN_LABELS[e.plan] || e.plan || null,
+        window: (e.sub_started_at && e.sub_expires_at)
+          ? `${fmtCH(e.sub_started_at)} → ${fmtCH(e.sub_expires_at)}`
+          : null,
+        days: e.days,
+        note: e.note,
+      })) });
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
   if (action === "access" && req.method === "POST") {
     const { user_id, authorized } = req.body||{};
     if (!user_id) return res.status(400).json({ error:"user_id requis." });
@@ -113,20 +149,26 @@ module.exports = async function handler(req, res) {
 
   // ── subscribe (activer/désactiver manuellement) ────────
   if (action === "subscribe" && req.method === "POST") {
-    const { user_id, subscribed, plan, start_date, extend } = req.body||{};
+    const { user_id, subscribed, plan, start_date, extend, days } = req.body||{};
     if (!user_id) return res.status(400).json({ error:"user_id requis." });
     try {
       await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_started_at TIMESTAMPTZ`.catch(()=>{});
 
       if (!subscribed) {
-        // Résiliation : on coupe l'accès mais on GARDE les dates pour l'historique.
-        await sql`UPDATE users SET subscribed=false WHERE id=${user_id}`;
+        // On journalise la fenêtre AVANT de l'effacer, sinon l'historique perd l'info.
+        const [before] = await sql`SELECT plan, sub_started_at, sub_expires_at FROM users WHERE id=${user_id}`;
+        await logSubEvent(sql, {
+          user_id, event_type: 'admin_cancel', source: 'admin',
+          plan: before?.plan || null,
+          sub_started_at: before?.sub_started_at || null,
+          sub_expires_at: before?.sub_expires_at || null,
+          note: 'Résiliation manuelle par l\'admin — dates effacées.',
+        });
+        // Résiliation : accès coupé ET dates effacées (l'admin ne veut plus voir
+        // de fenêtre "encore valable" pour un abonnement qui n'existe plus).
+        await sql`UPDATE users SET subscribed=false, sub_started_at=NULL, sub_expires_at=NULL WHERE id=${user_id}`;
         return res.json({ ok:true });
       }
-
-      const chosenPlan = plan || 'month';
-      const [cur] = await sql`SELECT sub_expires_at FROM users WHERE id=${user_id}`;
-      if (!cur) return res.status(404).json({ error:"Client introuvable." });
 
       let startAt = null;
       if (start_date) {
@@ -134,15 +176,26 @@ module.exports = async function handler(req, res) {
         if (!startAt) return res.status(400).json({ error:"Date de début invalide (format attendu AAAA-MM-JJ)." });
       }
 
-      let dates;
-      try {
-        dates = computeSubscription({
-          plan: chosenPlan,
-          startAt,
-          currentExpires: cur.sub_expires_at,
-          extend: extend === true && !start_date,   // une date imposée l'emporte sur la prolongation
-        });
-      } catch { return res.status(400).json({ error:"Plan invalide." }); }
+      const [cur] = await sql`SELECT sub_expires_at FROM users WHERE id=${user_id}`;
+      if (!cur) return res.status(404).json({ error:"Client introuvable." });
+
+      let dates, chosenPlan;
+      if (days) {
+        // Durée exacte en jours (ex. 1 jour offert) : prioritaire sur le plan.
+        try { dates = computeCustomWindow({ days, startAt }); }
+        catch (e) { return res.status(400).json({ error: e.message }); }
+        chosenPlan = 'custom';
+      } else {
+        chosenPlan = plan || 'month';
+        try {
+          dates = computeSubscription({
+            plan: chosenPlan,
+            startAt,
+            currentExpires: cur.sub_expires_at,
+            extend: extend === true && !start_date,   // une date imposée l'emporte sur la prolongation
+          });
+        } catch { return res.status(400).json({ error:"Plan invalide." }); }
+      }
 
       // Écriture unique et définitive : ces deux dates ne bougeront plus.
       await sql`
@@ -153,9 +206,17 @@ module.exports = async function handler(req, res) {
             sub_expires_at = ${dates.expiresAt}
         WHERE id = ${user_id}`;
 
+      await logSubEvent(sql, {
+        user_id, event_type: 'admin_activate', source: 'admin',
+        plan: chosenPlan, days: dates.days,
+        sub_started_at: dates.startedAt, sub_expires_at: dates.expiresAt,
+        note: dates.extended ? 'Renouvellement anticipé (prolongation)' : 'Activation manuelle sans paiement.',
+      });
+
       return res.json({
         ok: true,
-        extended: dates.extended,
+        plan: chosenPlan,
+        extended: dates.extended || false,
         days: dates.days,
         sub_started_at: dates.startedAt.toISOString(),
         sub_expires_at: dates.expiresAt.toISOString(),

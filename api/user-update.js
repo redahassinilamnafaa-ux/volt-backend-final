@@ -5,6 +5,7 @@ const { rateLimit }   = require("../lib/ratelimit");
 const Stripe          = require("stripe");
 const { Resend }      = require("resend");
 const { computeSubscription, endOfDayZurich } = require("../lib/subscription");
+const { logSubEvent } = require("../lib/subEvents");
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -236,6 +237,12 @@ module.exports = async function handler(req, res) {
         WHERE id = ${auth.id}
         RETURNING free_months, sub_started_at, sub_expires_at
       `;
+
+      await logSubEvent(sql, {
+        user_id: auth.id, event_type: 'referral_bonus', source: 'system',
+        plan: 'month', sub_started_at: updatedUser.sub_started_at, sub_expires_at: currentExp,
+        note: 'Mois gratuit réclamé (programme de parrainage).',
+      });
 
       return res.json({ ok: true, free_months: updatedUser.free_months, sub_expires_at: updatedUser.sub_expires_at });
     } catch (e) {

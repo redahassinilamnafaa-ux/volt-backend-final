@@ -2,6 +2,7 @@ const sql    = require("../lib/db");
 const Stripe = require("stripe");
 const { sendExpiryReminder, sendFailedPayment } = require("../lib/email");
 const { computeSubscription, startOfDayZurich, endOfDayZurich } = require("../lib/subscription");
+const { logSubEvent } = require("../lib/subEvents");
 
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -91,6 +92,14 @@ module.exports = async function handler(req, res) {
               VALUES (${usr.id}, ${usr.plan || plan || "unknown"}, ${amount}, ${invoice.id}, 'card', 'success')
               ON CONFLICT (stripe_payment_id) DO NOTHING
             `;
+            await logSubEvent(sql, {
+              user_id: usr.id,
+              event_type: invoice.billing_reason === "subscription_create" ? 'payment' : 'renewal',
+              source: 'stripe',
+              plan: usr.plan || plan || null,
+              sub_started_at: periodStart, sub_expires_at: periodEnd,
+              note: `CHF ${amount.toFixed(2)} — Facture Stripe ${invoice.id}`,
+            });
           }
         }
         break;
@@ -139,6 +148,11 @@ module.exports = async function handler(req, res) {
                 SET subscribed = true, plan = ${planId},
                     sub_started_at = ${startedAt}, sub_expires_at = ${expiresAt}
                 WHERE id = ${userId}`;
+              await logSubEvent(sql, {
+                user_id: userId, event_type: 'payment', source: 'twint',
+                plan: planId, sub_started_at: startedAt, sub_expires_at: expiresAt,
+                note: `CHF ${(pi.amount/100).toFixed(2)} — via webhook Stripe`,
+              });
             } catch (planErr) {
               console.error("[webhook] plan inconnu:", planId);
             }
