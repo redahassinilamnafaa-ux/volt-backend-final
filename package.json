@@ -1,7 +1,7 @@
 {
   "name": "volt-backend",
   "version": "1.0.0",
-  "engines": { "node": "20.x" },
+  "engines": { "node": "24.x" },
   "dependencies": {
     "@neondatabase/serverless": "^0.9.0",
     "bcryptjs": "^2.4.3",
