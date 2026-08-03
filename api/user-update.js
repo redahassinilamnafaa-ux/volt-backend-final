@@ -2,6 +2,7 @@ const cors            = require("../lib/cors");
 const sql             = require("../lib/db");
 const { requireAuth } = require("../lib/auth");
 const { rateLimit }   = require("../lib/ratelimit");
+const { subscriptionDates, extendPeriodEnd, ensureSubscriptionColumns } = require("../lib/subscription");
 const Stripe          = require("stripe");
 const { Resend }      = require("resend");
 
@@ -17,10 +18,11 @@ module.exports = async function handler(req, res) {
   // ── GET /api/user-update?action=me → Profil utilisateur ────────
   if (req.method === "GET" && req.query.action === "me") {
     try {
+      await ensureSubscriptionColumns();
       const [u] = await sql`
         SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.plan, u.subscribed,
                u.authorized, u.email_verified, u.gym_id, u.referral_code, u.free_months,
-               u.sub_expires_at, u.cancel_at_period_end,
+               u.sub_started_at, u.sub_expires_at, u.cancel_at_period_end,
                g.name AS gym_name,
                (SELECT COUNT(*) FROM users WHERE referred_by = u.id AND subscribed = true) AS ref_count
         FROM users u LEFT JOIN gyms g ON u.gym_id = g.id
@@ -42,7 +44,7 @@ module.exports = async function handler(req, res) {
           referral_count: parseInt(u.ref_count) || 0,
           free_months: u.free_months,
           email_verified: u.email_verified,
-          sub_expires_at: u.sub_expires_at ? new Date(u.sub_expires_at).toISOString() : null,
+          ...subscriptionDates(u.sub_started_at, u.sub_expires_at, u.plan),
         }
       });
     } catch (e) {
@@ -200,11 +202,9 @@ module.exports = async function handler(req, res) {
       if (!u) return res.status(404).json({ error: "Utilisateur introuvable." });
       if (u.free_months <= 0) return res.status(400).json({ error: "Aucun mois gratuit disponible." });
 
-      const base = (u.sub_expires_at && new Date(u.sub_expires_at) > new Date()) ? new Date(u.sub_expires_at) : new Date();
-      const tYear = base.getUTCFullYear() + Math.floor((base.getUTCMonth() + 1) / 12);
-      const tMonth = (base.getUTCMonth() + 1) % 12;
-      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
-      let currentExp = new Date(Date.UTC(tYear, tMonth, Math.min(base.getUTCDate(), lastDay)));
+      // Le mois offert PROLONGE la fin ; la date de début reste celle de la
+      // souscription d'origine et n'est jamais réécrite.
+      let currentExp = extendPeriodEnd(u.sub_expires_at, 1);
 
       if (u.stripe_customer) {
         try {

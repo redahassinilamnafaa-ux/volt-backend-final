@@ -1,6 +1,7 @@
 const sql    = require("../lib/db");
 const Stripe = require("stripe");
 const { sendExpiryReminder, sendFailedPayment } = require("../lib/email");
+const { PLAN_MONTHS, computePeriod, ensureSubscriptionColumns } = require("../lib/subscription");
 
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -68,15 +69,20 @@ module.exports = async function handler(req, res) {
         const invoice = event.data.object;
         if (!invoice.subscription) break;
         const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
-        const periodEnd = new Date(subscription.current_period_end * 1000);
+        // Période de facturation Stripe : instants fixes, identiques à ceux
+        // qu'enregistre pay-confirm.js — les deux chemins ne peuvent plus
+        // écrire deux échéances différentes pour un même paiement.
+        const periodStart = new Date(subscription.current_period_start * 1000);
+        const periodEnd   = new Date(subscription.current_period_end   * 1000);
         const plan = subscription.metadata?.plan;
         const amount = invoice.amount_paid / 100;
         const customerId = invoice.customer;
 
+        await ensureSubscriptionColumns();
         if (plan) {
-          await sql`UPDATE users SET subscribed = true, plan = ${plan}, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
+          await sql`UPDATE users SET subscribed = true, plan = ${plan}, sub_started_at = ${periodStart}, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
         } else {
-          await sql`UPDATE users SET subscribed = true, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
+          await sql`UPDATE users SET subscribed = true, sub_started_at = ${periodStart}, sub_expires_at = ${periodEnd} WHERE stripe_customer = ${customerId}`;
         }
 
         const isBillable = invoice.billing_reason === "subscription_cycle" ||
@@ -115,18 +121,20 @@ module.exports = async function handler(req, res) {
         if (pi.metadata?.payment_type !== "twint") break;
         const userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
         const planId = pi.metadata?.plan_id;
-        const DUR_DAYS = { month: 30, quarter: 90, year: 365 };
-        const days = planId ? DUR_DAYS[planId] : null;
-        if (userId && planId && days) {
+        if (userId && planId && PLAN_MONTHS[planId]) {
           await sql`
             INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
             VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
             ON CONFLICT (stripe_payment_id) DO NOTHING
           `;
-          const [u] = await sql`SELECT subscribed FROM users WHERE id = ${userId}`;
+          await ensureSubscriptionColumns();
+          const [u] = await sql`SELECT subscribed, sub_expires_at FROM users WHERE id = ${userId}`;
+          // Filet de sécurité si le client a fermé l'app avant que pay-confirm
+          // ne réponde. Même calcul en mois que pay-confirm.js (et non plus
+          // « now + 30 jours »), pour que les deux chemins donnent la même fin.
           if (u && !u.subscribed) {
-            const exp = new Date(Date.now() + days * 86400000);
-            await sql`UPDATE users SET subscribed = true, plan = ${planId}, sub_expires_at = ${exp} WHERE id = ${userId}`;
+            const { start, end } = computePeriod(planId);
+            await sql`UPDATE users SET subscribed = true, plan = ${planId}, sub_started_at = ${start}, sub_expires_at = ${end} WHERE id = ${userId}`;
           }
         }
         break;

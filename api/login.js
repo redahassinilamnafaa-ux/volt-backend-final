@@ -5,6 +5,7 @@ const bcrypt        = require("bcryptjs");
 const crypto        = require("crypto");
 const { Resend }    = require("resend");
 const { rateLimit, getIp } = require("../lib/ratelimit");
+const { subscriptionDates, ensureSubscriptionColumns } = require("../lib/subscription");
 
 const FRONTEND = "https://volt-energy.ch";
 
@@ -98,10 +99,12 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: "Email et mot de passe requis." });
 
   try {
+    await ensureSubscriptionColumns();
     const [u] = await sql`
       SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.password,
              u.plan, u.subscribed, u.authorized, u.email_verified,
-             u.gym_id, u.referral_code, u.free_months, u.sub_expires_at,
+             u.gym_id, u.referral_code, u.free_months,
+             u.sub_started_at, u.sub_expires_at,
              g.name AS gym_name,
              (SELECT COUNT(*) FROM users WHERE referred_by = u.id AND subscribed = true) AS ref_count
       FROM users u LEFT JOIN gyms g ON u.gym_id = g.id
@@ -147,7 +150,7 @@ module.exports = async function handler(req, res) {
         referral_count: parseInt(u.ref_count) || 0,
         free_months: u.free_months,
         email_verified: true,
-        sub_expires_at: u.sub_expires_at ? new Date(u.sub_expires_at).toISOString() : null,
+        ...subscriptionDates(u.sub_started_at, u.sub_expires_at, u.plan),
       }
     });
 

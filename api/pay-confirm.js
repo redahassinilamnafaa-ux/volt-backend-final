@@ -4,8 +4,7 @@ const { requireAuth } = require("../lib/auth");
 const Stripe          = require("stripe");
 const stripe          = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { sendReceipt } = require("../lib/email");
-
-const DUR = { month: 1, quarter: 3, year: 12 };
+const { PLAN_MONTHS, computePeriod, ensureSubscriptionColumns } = require("../lib/subscription");
 
 module.exports = async function handler(req, res) {
   cors(req, res);
@@ -28,17 +27,15 @@ module.exports = async function handler(req, res) {
       if (String(pi.metadata.volt_user_id) !== String(auth.id))
         return res.status(403).json({ error: "Non autorisé." });
 
-      const months = DUR[pidPlan];
-      if (!months) return res.status(400).json({ error: "Plan invalide." });
+      if (!PLAN_MONTHS[pidPlan]) return res.status(400).json({ error: "Plan invalide." });
 
-      const _now = new Date();
-      const tYear = _now.getUTCFullYear() + Math.floor((_now.getUTCMonth() + months) / 12);
-      const tMonth = (_now.getUTCMonth() + months) % 12;
-      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
-      const exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
+      // Période figée au jour du paiement : du jour même à la veille du
+      // quantième anniversaire, ni plus ni moins (cf. lib/subscription.js).
+      const { start, end: exp } = computePeriod(pidPlan);
 
+      await ensureSubscriptionColumns();
       const [uBefore] = await sql`SELECT referred_by, subscribed FROM users WHERE id = ${auth.id}`;
-      await sql`UPDATE users SET subscribed = true, plan = ${pidPlan}, sub_expires_at = ${exp} WHERE id = ${auth.id}`;
+      await sql`UPDATE users SET subscribed = true, plan = ${pidPlan}, sub_started_at = ${start}, sub_expires_at = ${exp} WHERE id = ${auth.id}`;
       await sql`
         INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
         VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
@@ -60,8 +57,7 @@ module.exports = async function handler(req, res) {
   if (!payment_intent_id || !plan_id)
     return res.status(400).json({ error: "Paramètres manquants." });
 
-  const months = DUR[plan_id];
-  if (!months) return res.status(400).json({ error: "Plan invalide." });
+  if (!PLAN_MONTHS[plan_id]) return res.status(400).json({ error: "Plan invalide." });
 
   try {
     const [u] = await sql`SELECT id, email, first_name, stripe_customer, referred_by, subscribed FROM users WHERE id = ${auth.id}`;
@@ -77,18 +73,19 @@ module.exports = async function handler(req, res) {
       return res.status(403).json({ error: "Non autorisé." });
 
     const sub = pi.invoice?.subscription;
-    let exp;
+    let start, exp;
     if (sub) {
-      exp = new Date(sub.current_period_end * 1000);
+      // Abonnement Stripe : la période de facturation FAIT FOI, sinon l'accès
+      // s'arrêterait avant (ou après) le prélèvement suivant. Ce sont des
+      // instants fixes renvoyés par Stripe, ils ne dérivent pas.
+      start = new Date(sub.current_period_start * 1000);
+      exp   = new Date(sub.current_period_end   * 1000);
     } else {
-      const _now = new Date();
-      const tYear  = _now.getUTCFullYear() + Math.floor((_now.getUTCMonth() + months) / 12);
-      const tMonth = (_now.getUTCMonth() + months) % 12;
-      const lastDay = new Date(Date.UTC(tYear, tMonth + 1, 0)).getUTCDate();
-      exp = new Date(Date.UTC(tYear, tMonth, Math.min(_now.getUTCDate(), lastDay)));
+      ({ start, end: exp } = computePeriod(plan_id));
     }
 
-    await sql`UPDATE users SET subscribed = true, plan = ${plan_id}, sub_expires_at = ${exp}, stripe_customer = ${u.stripe_customer} WHERE id = ${auth.id}`;
+    await ensureSubscriptionColumns();
+    await sql`UPDATE users SET subscribed = true, plan = ${plan_id}, sub_started_at = ${start}, sub_expires_at = ${exp}, stripe_customer = ${u.stripe_customer} WHERE id = ${auth.id}`;
 
     await sql`
       INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
