@@ -4,6 +4,8 @@ const { requireAuth, signToken } = require("../lib/auth");
 const bcrypt          = require("bcryptjs");
 const { daysLeft, fmtCH, computeSubscription, computeCustomWindow, parseDayInput } = require("../lib/subscription");
 const { ensureSubEventsTable, logSubEvent } = require("../lib/subEvents");
+const { ensurePauseColumns, setPause, cancelPause } = require("../lib/subPause");
+const { isPaused } = require("../lib/subscription");
 
 module.exports = async function handler(req, res) {
   cors(req, res);
@@ -58,9 +60,10 @@ module.exports = async function handler(req, res) {
   if (action === "members") {
     try {
       await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_started_at TIMESTAMPTZ`.catch(()=>{});
+      await ensurePauseColumns(sql);
       const rows = await sql`
         SELECT u.id, u.first_name, u.last_name, u.email, u.plan, u.subscribed, u.authorized, u.created_at,
-          u.sub_started_at, u.sub_expires_at,
+          u.sub_started_at, u.sub_expires_at, u.sub_paused_from, u.sub_paused_to,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans_month,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id) as scans_total,
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p WHERE p.user_id=u.id AND p.status='success') as revenue
@@ -85,6 +88,10 @@ module.exports = async function handler(req, res) {
         sub_start: fmtCH(m.sub_started_at),
         sub_end:   fmtCH(m.sub_expires_at),
         days_left: m.subscribed ? daysLeft(m.sub_expires_at) : null,
+        paused_now:    isPaused(m.sub_paused_from, m.sub_paused_to),
+        pause_planned: !!(m.sub_paused_from && m.sub_paused_to && new Date(m.sub_paused_to) > new Date()),
+        paused_from: m.sub_paused_from ? fmtCH(m.sub_paused_from) : null,
+        paused_to:   m.sub_paused_to   ? fmtCH(m.sub_paused_to)   : null,
       })) });
     } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
@@ -237,6 +244,8 @@ module.exports = async function handler(req, res) {
         renewal:        '🔄 Renouvelé',
         referral_bonus: '🎁 Mois offert (parrainage)',
         expired:        '⏳ Expiré automatiquement',
+        paused:         '⏸️ Abonnement mis en pause',
+        pause_cancelled:'▶️ Pause annulée / reprise',
       };
       const PLAN_LABELS = { month:'Mensuel', quarter:'Trimestriel', year:'Annuel', custom:'Jours offerts' };
 
@@ -252,6 +261,31 @@ module.exports = async function handler(req, res) {
         note: e.note,
       })) });
     } catch(e) { console.error("[api][fitness-sub-history]", e); return res.status(500).json({ error: "Erreur serveur." }); }
+  }
+
+  // ── PAUSE d'abonnement (vacances) ──────────────────────
+  if (action === "pause" && req.method === "POST") {
+    const { user_id, from, to } = req.body || {};
+    if (!user_id) return res.status(400).json({ error: "user_id requis." });
+    try {
+      const [u] = await sql`SELECT id FROM users WHERE id=${user_id} AND gym_id=${gym_id}`;
+      if (!u) return res.status(403).json({ error: "Membre non trouvé dans votre fitness." });
+      const r = await setPause(sql, { user_id, from, to, source: 'gym' });
+      if (r.error) return res.status(r.status || 400).json({ error: r.error });
+      return res.json(r);
+    } catch(e) { console.error("[api][fitness-pause]", e); return res.status(500).json({ error: "Erreur serveur." }); }
+  }
+
+  if (action === "cancel-pause" && req.method === "POST") {
+    const { user_id } = req.body || {};
+    if (!user_id) return res.status(400).json({ error: "user_id requis." });
+    try {
+      const [u] = await sql`SELECT id FROM users WHERE id=${user_id} AND gym_id=${gym_id}`;
+      if (!u) return res.status(403).json({ error: "Membre non trouvé dans votre fitness." });
+      const r = await cancelPause(sql, { user_id, source: 'gym' });
+      if (r.error) return res.status(r.status || 400).json({ error: r.error });
+      return res.json(r);
+    } catch(e) { console.error("[api][fitness-cancel-pause]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   return res.status(400).json({ error: "Action inconnue." });

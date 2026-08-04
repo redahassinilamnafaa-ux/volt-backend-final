@@ -1,5 +1,6 @@
 const cors   = require("../lib/cors");
 const sql    = require("../lib/db");
+const { isPaused } = require("../lib/subscription");
 
 const CD = 15 * 60; // cooldown 15 min en secondes
 
@@ -130,6 +131,11 @@ module.exports = async function handler(req, res) {
     if (!row)            return res.json({ result: "DENIED", reason: "QR_EXPIRED_OR_INVALID" });
     if (!row.subscribed) return res.json({ result: "DENIED", reason: "NOT_SUBSCRIBED" });
     if (!row.authorized) return res.json({ result: "DENIED", reason: "BLOCKED_BY_GYM" });
+
+    // Abonnement gelé (vacances) : accès suspendu, mais les jours sont rendus à la fin.
+    if (isPaused(row.sub_paused_from, row.sub_paused_to)) {
+      return res.json({ result: "DENIED", reason: "SUB_PAUSED" });
+    }
 
     if (row.sub_expires_at && new Date(row.sub_expires_at) < new Date()) {
       sql`UPDATE users SET subscribed = false WHERE id = ${row.id}`.catch(() => {});

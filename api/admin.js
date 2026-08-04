@@ -5,6 +5,8 @@ const { Resend } = require("resend");
 const { signToken, requireAuth } = require("../lib/auth");
 const { computeSubscription, computeCustomWindow, daysLeft, parseDayInput, fmtCH } = require("../lib/subscription");
 const { ensureSubEventsTable, logSubEvent } = require("../lib/subEvents");
+const { ensurePauseColumns, setPause, cancelPause } = require("../lib/subPause");
+const { isPaused } = require("../lib/subscription");
 module.exports = async function handler(req, res) {
   cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -72,9 +74,10 @@ module.exports = async function handler(req, res) {
   // ── clients ────────────────────────────────────────────
   if (action === "clients") {
     try {
+      await ensurePauseColumns(sql);
       const rows = await sql`
         SELECT u.id,u.first_name,u.last_name,u.email,u.plan,u.subscribed,u.authorized,u.email_verified,u.created_at,
-          u.sub_started_at, u.sub_expires_at,
+          u.sub_started_at, u.sub_expires_at, u.sub_paused_from, u.sub_paused_to,
           g.name as gym_name, g.filiale as gym_filiale,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
           (SELECT COALESCE(SUM(p.amount_chf),0) FROM payments p WHERE p.user_id=u.id AND p.status='success') as revenue
@@ -96,7 +99,11 @@ module.exports = async function handler(req, res) {
         sub_expires_at: c.sub_expires_at ? new Date(c.sub_expires_at).toISOString() : null,
         sub_start: fmtCH(c.sub_started_at),
         sub_end:   fmtCH(c.sub_expires_at),
-        days_left: c.subscribed ? daysLeft(c.sub_expires_at) : null
+        days_left: c.subscribed ? daysLeft(c.sub_expires_at) : null,
+        paused_now:    isPaused(c.sub_paused_from, c.sub_paused_to),
+        pause_planned: !!(c.sub_paused_from && c.sub_paused_to && new Date(c.sub_paused_to) > new Date()),
+        paused_from: c.sub_paused_from ? fmtCH(c.sub_paused_from) : null,
+        paused_to:   c.sub_paused_to   ? fmtCH(c.sub_paused_to)   : null
       })) });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
@@ -121,6 +128,8 @@ module.exports = async function handler(req, res) {
         renewal:        '🔄 Renouvelé',
         referral_bonus: '🎁 Mois offert (parrainage)',
         expired:        '⏳ Expiré automatiquement',
+        paused:         '⏸️ Abonnement mis en pause',
+        pause_cancelled:'▶️ Pause annulée / reprise',
       };
       const PLAN_LABELS = { month:'Mensuel', quarter:'Trimestriel', year:'Annuel', custom:'Jours offerts' };
 
@@ -136,6 +145,27 @@ module.exports = async function handler(req, res) {
         note: e.note,
       })) });
     } catch(e) { console.error("[admin][sub-history]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
+  // ── PAUSE d'abonnement (vacances) ──────────────────────
+  if (action === "pause" && req.method === "POST") {
+    const { user_id, from, to } = req.body||{};
+    if (!user_id) return res.status(400).json({ error:"user_id requis." });
+    try {
+      const r = await setPause(sql, { user_id, from, to, source: 'admin' });
+      if (r.error) return res.status(r.status || 400).json({ error: r.error });
+      return res.json(r);
+    } catch(e) { console.error("[admin][pause]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
+  if (action === "cancel-pause" && req.method === "POST") {
+    const { user_id } = req.body||{};
+    if (!user_id) return res.status(400).json({ error:"user_id requis." });
+    try {
+      const r = await cancelPause(sql, { user_id, source: 'admin' });
+      if (r.error) return res.status(r.status || 400).json({ error: r.error });
+      return res.json(r);
+    } catch(e) { console.error("[admin][cancel-pause]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
   if (action === "access" && req.method === "POST") {
