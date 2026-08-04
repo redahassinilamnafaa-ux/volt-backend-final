@@ -45,6 +45,23 @@ module.exports = async function handler(req, res) {
         sql`SELECT COALESCE(SUM(p.amount_chf),0) as n FROM payments p JOIN users u ON p.user_id=u.id WHERE u.gym_id=${gym_id} AND p.status='success' AND p.created_at>NOW()-INTERVAL '30 days'`,
         sql`SELECT COALESCE(SUM(p.amount_chf),0) as n FROM payments p JOIN users u ON p.user_id=u.id WHERE u.gym_id=${gym_id} AND p.status='success'`,
       ]);
+      // Stocks des bornes de CETTE salle. Requete separee et tolerante : le
+      // tableau de bord doit continuer a s'afficher meme si aucune borne n'a
+      // encore rien remonte, ou si les tables n'existent pas sur une base
+      // ancienne. Alimente par la tablette (api/validate.js, action commit).
+      let machines = [];
+      try {
+        machines = await sql`
+          SELECT m.machine_id, m.name,
+                 l.water_ml, l.water_capacity_ml, l.hoppers, l.updated_at
+          FROM machines m
+          LEFT JOIN machine_levels l ON l.machine_id = m.machine_id
+          WHERE m.gym_id = ${gym_id} AND m.active = true
+          ORDER BY m.name`;
+      } catch (e) {
+        console.warn("[fitness] stocks indisponibles:", e.message);
+      }
+
       return res.json({
         members_active: parseInt(members.n) || 0,
         members_total:  parseInt(total.n)   || 0,
@@ -52,6 +69,16 @@ module.exports = async function handler(req, res) {
         scans_total:    parseInt(scansT.n)  || 0,
         rev_month:      parseFloat(revM.n)  || 0,
         rev_total:      parseFloat(revT.n)  || 0,
+        machines: machines.map(m => ({
+          machine_id: m.machine_id,
+          name: m.name,
+          levels: m.updated_at ? {
+            water_ml: m.water_ml,
+            water_capacity_ml: m.water_capacity_ml,
+            hoppers: m.hoppers || [],
+            updated_at: m.updated_at,
+          } : null,
+        })),
       });
     } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
