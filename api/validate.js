@@ -468,9 +468,12 @@ async function hopperRefill(body, res) {
       // Borne non rattachee a une salle : rien a decompter, ce n'est pas une erreur.
       return res.json({ ok: true, tracked: false });
     }
+    // Insertion a ZERO et non a -qty : sans ligne prealable, la salle n'avait
+    // aucun stock declare, et y ecrire une valeur negative aurait fausse
+    // durablement le suivi. Le decompte ne s'applique qu'a un stock connu.
     const [row] = await sql`
       INSERT INTO gym_stock (gym_id, product, grams, updated_at)
-      VALUES (${m.gym_id}, ${product}, ${-qty}, NOW())
+      VALUES (${m.gym_id}, ${product}, 0, NOW())
       ON CONFLICT (gym_id, product) DO UPDATE
         SET grams = GREATEST(0, gym_stock.grams - ${qty}), updated_at = NOW()
       RETURNING grams`;
