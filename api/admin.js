@@ -497,6 +497,20 @@ module.exports = async function handler(req, res) {
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
+  // ── Distributions echouees ─────────────────────────────
+  if (action === "faults" && req.method === "GET") {
+    try {
+      await sql`ALTER TABLE vends ADD COLUMN IF NOT EXISTS fail_reason TEXT`.catch(()=>{});
+      const rows = await sql`
+        SELECT v.order_id, v.machine_id, v.product_name, v.user_name,
+               v.fail_reason, v.updated_at, g.name AS gym_name
+        FROM vends v LEFT JOIN gyms g ON g.id::text = v.gym_id
+        WHERE v.state = 'FAILED'
+        ORDER BY v.updated_at DESC LIMIT 200`;
+      return res.json({ faults: rows });
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
   // ── Messages laisses par les clients sur les bornes ────
   if (action === "feedback" && req.method === "GET") {
     try {

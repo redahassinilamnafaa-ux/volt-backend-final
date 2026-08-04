@@ -403,6 +403,7 @@ async function vendCommit(body, res) {
 
   if (!success) {
     await sql`UPDATE vends SET state = 'FAILED', updated_at = NOW() WHERE order_id = ${order_id}`;
+    await recordFailure(order_id, machine_id || v.machine_id, body.fail_reason, v.gym_id);
     return res.json({ ok: true, state: "FAILED" });
   }
 
@@ -431,6 +432,46 @@ async function vendCommit(body, res) {
   await sql`UPDATE vends SET state = 'DISPENSED', updated_at = NOW() WHERE order_id = ${order_id}`;
 
   return res.json({ ok: true, state: "DISPENSED", cooldown_secs: CD });
+}
+
+/**
+ * Enregistre une distribution ratee et previent l'exploitant ET la salle.
+ *
+ * Jusqu'ici les pannes ne partaient QUE vers le portail du fabricant : ni
+ * l'exploitant ni le gerant n'en voyaient la couleur, alors que la table
+ * `vends` en gardait deja la trace. Le motif technique remonte par la carte est
+ * conserve tel quel — c'est lui qui permet de comprendre apres coup.
+ */
+async function recordFailure(order_id, machine_id, reason, gym_id) {
+  const detail = (reason || "").toString().trim().slice(0, 500) || "motif non communique";
+  try {
+    await sql`ALTER TABLE vends ADD COLUMN IF NOT EXISTS fail_reason TEXT`;
+    await sql`UPDATE vends SET fail_reason = ${detail} WHERE order_id = ${order_id}`;
+  } catch (e) {
+    console.warn("[fault] motif non enregistre:", e.message);
+  }
+  try {
+    const recipients = [process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL];
+    let gymName = "";
+    if (gym_id) {
+      const [g] = await sql`SELECT name, email FROM gyms WHERE id::text = ${String(gym_id)}`;
+      if (g) {
+        gymName = g.name || "";
+        if (g.email) recipients.push(g.email);
+      }
+    }
+    await sendAlertEmail(
+      `⚠️ VOLT ${machine_id || ""} — distribution échouée`,
+      `Une boisson n'a pas été servie${gymName ? ` chez <strong>${gymName}</strong>` : ""}.
+       <br/><br/><strong>Borne :</strong> ${machine_id || "inconnue"}
+       <br/><strong>Commande :</strong> ${order_id}
+       <br/><strong>Motif remonté par la machine :</strong><br/>${String(detail).replace(/</g, "&lt;")}
+       <br/><br/>Le client n'a pas été débité : sa boisson et son délai de 15 minutes restent intacts.`,
+      recipients
+    );
+  } catch (e) {
+    console.warn("[fault] alerte non envoyee:", e.message);
+  }
 }
 
 /** Reserve restante en deca de laquelle une livraison doit etre planifiee. */
@@ -505,6 +546,9 @@ async function ensureFeedbackTable() {
       phone      TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`;
+  // Ajoutee apres coup : la salle concernee, pour que le gerant ne voie que
+  // les messages de SES bornes.
+  await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS gym_id INTEGER`;
 }
 
 /**
@@ -519,13 +563,28 @@ async function clientFeedback(body, res) {
   if (!message) return res.json({ ok: false, error: "EMPTY" });
   try {
     await ensureFeedbackTable();
+    // Salle concernee, deduite de la borne : le gerant doit recevoir les
+    // messages laisses sur SES machines, pas ceux du parc entier.
+    let gym = null;
+    if (body.machine_id) {
+      const [m] = await sql`SELECT gym_id FROM machines WHERE machine_id = ${body.machine_id}`;
+      if (m && m.gym_id) {
+        const [g] = await sql`SELECT id, name, email FROM gyms WHERE id = ${m.gym_id}`;
+        gym = g || null;
+      }
+    }
     await sql`
-      INSERT INTO feedback (machine_id, message, phone)
-      VALUES (${body.machine_id || null}, ${message}, ${phone || null})`;
+      INSERT INTO feedback (machine_id, message, phone, gym_id)
+      VALUES (${body.machine_id || null}, ${message}, ${phone || null}, ${gym ? gym.id : null})`;
+
+    const recipients = [process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL];
+    if (gym && gym.email) recipients.push(gym.email);
     await sendAlertEmail(
       `💬 VOLT — message d'un client${body.machine_id ? " (" + body.machine_id + ")" : ""}`,
       `${message.replace(/</g, "&lt;").replace(/\n/g, "<br/>")}
-       <br/><br/><strong>Rappel :</strong> ${phone ? phone.replace(/</g, "&lt;") : "non communiqué"}`
+       <br/><br/><strong>Rappel :</strong> ${phone ? phone.replace(/</g, "&lt;") : "non communiqué"}
+       ${gym ? `<br/><strong>Salle :</strong> ${gym.name}` : ""}`,
+      recipients
     );
     return res.json({ ok: true });
   } catch (e) {
@@ -534,10 +593,16 @@ async function clientFeedback(body, res) {
   }
 }
 
-/** Envoi d'un email d'alerte a l'exploitant. Silencieux en cas d'echec. */
-async function sendAlertEmail(subject, detail) {
-  const to = process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL;
-  if (!to || !process.env.RESEND_API_KEY) return;
+/**
+ * Envoi d'une alerte. Silencieux en cas d'echec — une alerte perdue ne doit
+ * jamais faire echouer l'appel qui l'a declenchee.
+ *
+ * @param extraTo destinataires additionnels (la salle concernee, typiquement)
+ */
+async function sendAlertEmail(subject, detail, extraTo) {
+  const list = Array.isArray(extraTo) ? extraTo : [process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL];
+  const to = [...new Set(list.filter(Boolean))];
+  if (!to.length || !process.env.RESEND_API_KEY) return;
   try {
     const { Resend } = require("resend");
     await new Resend(process.env.RESEND_API_KEY).emails.send({

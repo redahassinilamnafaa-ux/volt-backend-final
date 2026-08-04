@@ -62,7 +62,26 @@ module.exports = async function handler(req, res) {
         console.warn("[fitness] stocks indisponibles:", e.message);
       }
 
+      // Messages clients et pannes des bornes de CETTE salle. Requetes
+      // separees et tolerantes : le tableau de bord doit s'afficher meme si ces
+      // tables n'existent pas encore sur une base ancienne.
+      let feedback = [], faults = [];
+      try {
+        feedback = await sql`
+          SELECT id, machine_id, message, phone, created_at
+          FROM feedback WHERE gym_id = ${gym_id}
+          ORDER BY created_at DESC LIMIT 50`;
+      } catch (e) { console.warn("[fitness] messages indisponibles:", e.message); }
+      try {
+        faults = await sql`
+          SELECT order_id, machine_id, product_name, fail_reason, updated_at
+          FROM vends WHERE gym_id::text = ${String(gym_id)} AND state = 'FAILED'
+          ORDER BY updated_at DESC LIMIT 50`;
+      } catch (e) { console.warn("[fitness] pannes indisponibles:", e.message); }
+
       return res.json({
+        feedback,
+        faults,
         members_active: parseInt(members.n) || 0,
         members_total:  parseInt(total.n)   || 0,
         scans_month:    parseInt(scansM.n)  || 0,
