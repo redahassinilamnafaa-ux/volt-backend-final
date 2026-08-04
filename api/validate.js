@@ -294,6 +294,80 @@ async function ensureLevelsTable() {
  * qui l'entoure est le chemin qui debite le client. Perdre une remontee de stock
  * est sans consequence ; faire echouer un commit en ferait une.
  */
+/** Seuils appliques par la tablette — a garder identiques a VoltWaterTank. */
+const WATER_WARN_ML = 4000;
+const WATER_BLOCK_ML = 2000;
+
+/**
+ * Alerte l'exploitant au FRANCHISSEMENT d'un seuil, jamais en dessous.
+ *
+ * Comparer l'ancien et le nouveau niveau evite le harcelement : une fois la
+ * borne bloquee, les distributions suivantes restent sous le seuil et ne
+ * renvoient donc rien. Le remplissage rearme l'alerte.
+ *
+ * Erreurs avalees : une alerte perdue est moins grave qu'un commit echoue.
+ */
+async function alertOnThreshold(machine_id, previous, levels) {
+  const before = previous && Number.isFinite(previous.water_ml) ? previous.water_ml : null;
+  const after = Number.isFinite(levels.water_ml) ? levels.water_ml : null;
+  if (after === null) return;
+
+  // Sans historique, on n'alerte que si l'etat est deja critique.
+  const crossed = (limit) => before === null ? after <= limit : (before > limit && after <= limit);
+
+  let subject = null;
+  let detail = null;
+  if (crossed(WATER_BLOCK_ML)) {
+    subject = `⛔ VOLT ${machine_id} — machine à l'arrêt, plus d'eau`;
+    detail = `La borne <strong>${machine_id}</strong> a cessé de servir : il reste ${(after / 1000).toFixed(1)} L.
+      <br/><br/>Ce blocage est volontaire — il empêche la pompe de tourner à vide et de griller.
+      <br/><br/><strong>À faire :</strong> remplir le bidon À RAS, puis confirmer sur l'écran de la machine
+      (Administration → Inventaire → « Réservoir rempli »). Sans cette confirmation la borne reste bloquée.`;
+  } else if (crossed(WATER_WARN_ML)) {
+    subject = `⚠️ VOLT ${machine_id} — bidon bas`;
+    detail = `Il reste ${(after / 1000).toFixed(1)} L dans la borne <strong>${machine_id}</strong>,
+      soit une dizaine de boissons. Prévoyez un remplissage : en dessous de
+      ${(WATER_BLOCK_ML / 1000).toFixed(1)} L la borne s'arrête de servir.`;
+  }
+
+  // Bacs passes sous leur seuil depuis la derniere remontee.
+  const prevHoppers = Array.isArray(previous?.hoppers) ? previous.hoppers : [];
+  const nowHoppers = Array.isArray(levels.hoppers) ? levels.hoppers : [];
+  const newlyLow = nowHoppers.filter((h) => {
+    if (!(h.warn_g > 0) || !(h.grams <= h.warn_g)) return false;
+    const p = prevHoppers.find((x) => x.id === h.id);
+    return !p || p.grams > h.warn_g;
+  });
+  if (newlyLow.length) {
+    const list = newlyLow.map((h) => `${h.name || h.id} (${h.grams} g)`).join(", ");
+    subject = subject || `⚠️ VOLT ${machine_id} — poudre à recharger`;
+    detail = (detail ? detail + "<br/><br/>" : "") + `<strong>Bacs à recharger :</strong> ${list}.`;
+  }
+
+  if (!subject) return;
+  const to = process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL;
+  if (!to || !process.env.RESEND_API_KEY) return;
+  try {
+    const { Resend } = require("resend");
+    await new Resend(process.env.RESEND_API_KEY).emails.send({
+      from: "VOLT. <noreply@volt-energy.ch>",
+      to,
+      subject,
+      html: `<div style="background:#040c22;padding:32px 16px;font-family:Arial,sans-serif">
+        <div style="max-width:460px;margin:0 auto;background:#071433;border-radius:18px;overflow:hidden">
+          <div style="padding:28px 32px 10px;font-size:52px;font-weight:900;color:#fff;letter-spacing:-2px;line-height:.9">VOLT.</div>
+          <div style="height:4px;width:44px;background:#FF9500;margin:0 32px 22px;border-radius:2px"></div>
+          <div style="padding:0 32px 26px;font-size:14px;color:rgba(255,255,255,.72);line-height:1.8">${detail}</div>
+          <div style="padding:14px 32px;border-top:1px solid rgba(255,255,255,.06);font-size:11px;color:rgba(255,255,255,.25)">
+            Alerte automatique · ${new Date().toLocaleString("fr-CH", { timeZone: "Europe/Zurich" })}
+          </div>
+        </div></div>`,
+    });
+  } catch (e) {
+    console.warn("[levels] alerte non envoyee:", e.message);
+  }
+}
+
 async function recordLevels(machine_id, levels) {
   if (!machine_id || !levels || typeof levels !== "object") return;
   try {
@@ -301,6 +375,13 @@ async function recordLevels(machine_id, levels) {
     const water = Number.isFinite(levels.water_ml) ? levels.water_ml : null;
     const capacity = Number.isFinite(levels.water_capacity_ml) ? levels.water_capacity_ml : null;
     const hoppers = JSON.stringify(Array.isArray(levels.hoppers) ? levels.hoppers : []);
+
+    // Etat precedent lu AVANT l'ecriture : c'est lui qui distingue un
+    // franchissement de seuil d'un simple passage sous le seuil.
+    const [previous] = await sql`
+      SELECT water_ml, hoppers FROM machine_levels WHERE machine_id = ${machine_id}`;
+    await alertOnThreshold(machine_id, previous, levels);
+
     await sql`
       INSERT INTO machine_levels (machine_id, water_ml, water_capacity_ml, hoppers, updated_at)
       VALUES (${machine_id}, ${water}, ${capacity}, ${hoppers}::jsonb, NOW())
