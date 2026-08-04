@@ -454,16 +454,36 @@ module.exports = async function handler(req, res) {
   if (action === "machines" && req.method === "GET") {
     try {
       await ensureMachinesTable();
+      // machine_levels est alimentee par la tablette a chaque distribution
+      // (api/validate.js). Creee ici aussi car une machine peut n'avoir jamais
+      // rien remonte : sans cela le LEFT JOIN echouerait sur une table absente.
+      await sql`
+        CREATE TABLE IF NOT EXISTS machine_levels (
+          machine_id        TEXT PRIMARY KEY,
+          water_ml          INTEGER,
+          water_capacity_ml INTEGER,
+          hoppers           JSONB NOT NULL DEFAULT '[]'::jsonb,
+          updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`;
       const rows = await sql`
         SELECT m.id, m.machine_id, m.name, m.gym_id, m.secret, m.active,
-               g.name as gym_name
+               g.name as gym_name,
+               l.water_ml, l.water_capacity_ml, l.hoppers, l.updated_at as levels_at
         FROM machines m
         LEFT JOIN gyms g ON m.gym_id = g.id
+        LEFT JOIN machine_levels l ON l.machine_id = m.machine_id
         ORDER BY m.created_at DESC`;
       return res.json({ machines: rows.map(m=>({
         id: m.id, machine_id: m.machine_id, name: m.name,
         gym_id: m.gym_id, gym_name: m.gym_name || null,
-        secret: m.secret, active: m.active
+        secret: m.secret, active: m.active,
+        // null tant que la borne n'a servi aucune boisson depuis la mise a jour.
+        levels: m.levels_at ? {
+          water_ml: m.water_ml,
+          water_capacity_ml: m.water_capacity_ml,
+          hoppers: m.hoppers || [],
+          updated_at: m.levels_at
+        } : null
       })) });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }

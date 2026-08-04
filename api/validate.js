@@ -268,6 +268,54 @@ async function vendStatus(body, res) {
 }
 
 /**
+ * Etat des stocks de la borne (bidon d'eau, bacs de poudre).
+ *
+ * Cree a la volee, comme `machines` dans api/admin.js : le depot n'a pas de
+ * lanceur de migrations, et cette convention evite une manipulation SQL manuelle
+ * dans Neon a chaque deploiement.
+ */
+async function ensureLevelsTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS machine_levels (
+      machine_id        TEXT PRIMARY KEY,
+      water_ml          INTEGER,
+      water_capacity_ml INTEGER,
+      hoppers           JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+}
+
+/**
+ * Enregistre les niveaux transmis par la tablette avec la confirmation de
+ * distribution — le seul moment ou ils changent.
+ *
+ * TOUTE erreur est avalee : cette ecriture est accessoire, alors que le commit
+ * qui l'entoure est le chemin qui debite le client. Perdre une remontee de stock
+ * est sans consequence ; faire echouer un commit en ferait une.
+ */
+async function recordLevels(machine_id, levels) {
+  if (!machine_id || !levels || typeof levels !== "object") return;
+  try {
+    await ensureLevelsTable();
+    const water = Number.isFinite(levels.water_ml) ? levels.water_ml : null;
+    const capacity = Number.isFinite(levels.water_capacity_ml) ? levels.water_capacity_ml : null;
+    const hoppers = JSON.stringify(Array.isArray(levels.hoppers) ? levels.hoppers : []);
+    await sql`
+      INSERT INTO machine_levels (machine_id, water_ml, water_capacity_ml, hoppers, updated_at)
+      VALUES (${machine_id}, ${water}, ${capacity}, ${hoppers}::jsonb, NOW())
+      ON CONFLICT (machine_id) DO UPDATE SET
+        water_ml          = EXCLUDED.water_ml,
+        water_capacity_ml = EXCLUDED.water_capacity_ml,
+        hoppers           = EXCLUDED.hoppers,
+        updated_at        = NOW()
+    `;
+  } catch (e) {
+    console.warn("[levels] enregistrement impossible:", e.message);
+  }
+}
+
+/**
  * La tablette confirme le resultat REEL de la distribution.
  *
  * C'est ici — et nulle part avant — que le client est debite de son quart d'heure
@@ -276,8 +324,12 @@ async function vendStatus(body, res) {
  * rapports par salle/filiale restent corrects.
  */
 async function vendCommit(body, res) {
-  const { order_id, success } = body;
+  const { order_id, success, machine_id, levels } = body;
   if (!order_id) return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+
+  // Avant toute sortie : les niveaux valent aussi pour une distribution ratee,
+  // et plusieurs branches ci-dessous retournent tot.
+  await recordLevels(machine_id, levels);
 
   const [v] = await sql`SELECT * FROM vends WHERE order_id = ${order_id}`;
   if (!v) return res.json({ ok: true, state: "UNKNOWN" });
