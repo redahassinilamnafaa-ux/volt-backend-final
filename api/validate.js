@@ -75,7 +75,7 @@ module.exports = async function handler(req, res) {
   // firmware ferme, sessions fantomes) qui posait probleme sur la borne VOLT.
   // Toutes les actions sont IDEMPOTENTES.
   // ══════════════════════════════════════════════════════════════════════════
-  if (["open", "status", "commit", "cancel"].includes(body.action)) {
+  if (["open", "status", "commit", "cancel", "hopper_refill", "feedback"].includes(body.action)) {
     const auth = await resolveMachine(req);
     if (!auth.ok) return res.status(401).json({ ok: false, error: "SECRET_INVALID" });
     try {
@@ -84,6 +84,8 @@ module.exports = async function handler(req, res) {
         case "status": return await vendStatus(body, res);
         case "commit": return await vendCommit(body, res);
         case "cancel": return await vendCancel(body, res);
+        case "hopper_refill": return await hopperRefill(body, res);
+        case "feedback": return await clientFeedback(body, res);
       }
     } catch (e) {
       console.error("[vend]", body.action, e);
@@ -345,27 +347,7 @@ async function alertOnThreshold(machine_id, previous, levels) {
   }
 
   if (!subject) return;
-  const to = process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL;
-  if (!to || !process.env.RESEND_API_KEY) return;
-  try {
-    const { Resend } = require("resend");
-    await new Resend(process.env.RESEND_API_KEY).emails.send({
-      from: "VOLT. <noreply@volt-energy.ch>",
-      to,
-      subject,
-      html: `<div style="background:#040c22;padding:32px 16px;font-family:Arial,sans-serif">
-        <div style="max-width:460px;margin:0 auto;background:#071433;border-radius:18px;overflow:hidden">
-          <div style="padding:28px 32px 10px;font-size:52px;font-weight:900;color:#fff;letter-spacing:-2px;line-height:.9">VOLT.</div>
-          <div style="height:4px;width:44px;background:#FF9500;margin:0 32px 22px;border-radius:2px"></div>
-          <div style="padding:0 32px 26px;font-size:14px;color:rgba(255,255,255,.72);line-height:1.8">${detail}</div>
-          <div style="padding:14px 32px;border-top:1px solid rgba(255,255,255,.06);font-size:11px;color:rgba(255,255,255,.25)">
-            Alerte automatique · ${new Date().toLocaleString("fr-CH", { timeZone: "Europe/Zurich" })}
-          </div>
-        </div></div>`,
-    });
-  } catch (e) {
-    console.warn("[levels] alerte non envoyee:", e.message);
-  }
+  await sendAlertEmail(subject, detail);
 }
 
 async function recordLevels(machine_id, levels) {
@@ -449,6 +431,129 @@ async function vendCommit(body, res) {
   await sql`UPDATE vends SET state = 'DISPENSED', updated_at = NOW() WHERE order_id = ${order_id}`;
 
   return res.json({ ok: true, state: "DISPENSED", cooldown_secs: CD });
+}
+
+/** Reserve restante en deca de laquelle une livraison doit etre planifiee. */
+const STOCK_ALERT_G = 1000;
+
+async function ensureGymStockTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS gym_stock (
+      gym_id     INTEGER NOT NULL,
+      product    TEXT NOT NULL,
+      grams      INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (gym_id, product)
+    )`;
+}
+
+/**
+ * Un bac vient d'etre recharge d'un sachet sur la borne : on retire ce sachet de
+ * la reserve livree au fitness.
+ *
+ * C'est le SEUL evenement qui fait baisser cette reserve. Le decompte des bacs,
+ * lui, suit la consommation des boissons — deux choses distinctes : le bac se
+ * vide en servant, la reserve se vide en rechargeant le bac.
+ */
+async function hopperRefill(body, res) {
+  const { machine_id, hopper_name, hopper_id, grams } = body;
+  const qty = Number.isFinite(grams) ? grams : 1000;
+  const product = (hopper_name || hopper_id || "").trim();
+  if (!machine_id || !product) return res.json({ ok: false, error: "MISSING_FIELDS" });
+
+  try {
+    await ensureGymStockTable();
+    const [m] = await sql`SELECT gym_id FROM machines WHERE machine_id = ${machine_id}`;
+    if (!m || !m.gym_id) {
+      // Borne non rattachee a une salle : rien a decompter, ce n'est pas une erreur.
+      return res.json({ ok: true, tracked: false });
+    }
+    const [row] = await sql`
+      INSERT INTO gym_stock (gym_id, product, grams, updated_at)
+      VALUES (${m.gym_id}, ${product}, ${-qty}, NOW())
+      ON CONFLICT (gym_id, product) DO UPDATE
+        SET grams = GREATEST(0, gym_stock.grams - ${qty}), updated_at = NOW()
+      RETURNING grams`;
+    const left = row ? row.grams : 0;
+
+    if (left <= STOCK_ALERT_G) {
+      const [g] = await sql`SELECT name FROM gyms WHERE id = ${m.gym_id}`;
+      await sendAlertEmail(
+        `📦 VOLT ${g?.name || "fitness"} — livraison à prévoir (${product})`,
+        `Il ne reste que <strong>${(left / 1000).toFixed(1)} kg</strong> de
+         <strong>${product}</strong> en réserve chez <strong>${g?.name || "ce fitness"}</strong>.
+         <br/><br/>Le seuil d'alerte est fixé à ${(STOCK_ALERT_G / 1000).toFixed(1)} kg,
+         soit un rechargement de bac d'avance. Prévoyez la prochaine livraison.`
+      );
+    }
+    return res.json({ ok: true, tracked: true, grams_left: left });
+  } catch (e) {
+    console.error("[stock] hopper_refill:", e);
+    return res.json({ ok: false, error: "SERVER_ERROR" });
+  }
+}
+
+async function ensureFeedbackTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS feedback (
+      id         SERIAL PRIMARY KEY,
+      machine_id TEXT,
+      message    TEXT NOT NULL,
+      phone      TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+}
+
+/**
+ * Message laisse par un client sur l'ecran d'aide de la borne.
+ *
+ * Le telephone est FACULTATIF : l'exiger ferait renoncer une partie des gens,
+ * or un signalement anonyme reste utile pour comprendre une panne.
+ */
+async function clientFeedback(body, res) {
+  const message = (body.message || "").trim().slice(0, 2000);
+  const phone = (body.phone || "").trim().slice(0, 40);
+  if (!message) return res.json({ ok: false, error: "EMPTY" });
+  try {
+    await ensureFeedbackTable();
+    await sql`
+      INSERT INTO feedback (machine_id, message, phone)
+      VALUES (${body.machine_id || null}, ${message}, ${phone || null})`;
+    await sendAlertEmail(
+      `💬 VOLT — message d'un client${body.machine_id ? " (" + body.machine_id + ")" : ""}`,
+      `${message.replace(/</g, "&lt;").replace(/\n/g, "<br/>")}
+       <br/><br/><strong>Rappel :</strong> ${phone ? phone.replace(/</g, "&lt;") : "non communiqué"}`
+    );
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("[feedback]", e);
+    return res.json({ ok: false, error: "SERVER_ERROR" });
+  }
+}
+
+/** Envoi d'un email d'alerte a l'exploitant. Silencieux en cas d'echec. */
+async function sendAlertEmail(subject, detail) {
+  const to = process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL;
+  if (!to || !process.env.RESEND_API_KEY) return;
+  try {
+    const { Resend } = require("resend");
+    await new Resend(process.env.RESEND_API_KEY).emails.send({
+      from: "VOLT. <noreply@volt-energy.ch>",
+      to,
+      subject,
+      html: `<div style="background:#040c22;padding:32px 16px;font-family:Arial,sans-serif">
+        <div style="max-width:460px;margin:0 auto;background:#071433;border-radius:18px;overflow:hidden">
+          <div style="padding:28px 32px 10px;font-size:52px;font-weight:900;color:#fff;letter-spacing:-2px;line-height:.9">VOLT.</div>
+          <div style="height:4px;width:44px;background:#FF9500;margin:0 32px 22px;border-radius:2px"></div>
+          <div style="padding:0 32px 26px;font-size:14px;color:rgba(255,255,255,.72);line-height:1.8">${detail}</div>
+          <div style="padding:14px 32px;border-top:1px solid rgba(255,255,255,.06);font-size:11px;color:rgba(255,255,255,.25)">
+            Alerte automatique · ${new Date().toLocaleString("fr-CH", { timeZone: "Europe/Zurich" })}
+          </div>
+        </div></div>`,
+    });
+  } catch (e) {
+    console.warn("[alerte] non envoyee:", e.message);
+  }
 }
 
 /** Retour arriere sur la tablette, ou expiration du compte a rebours. */

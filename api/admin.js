@@ -451,6 +451,70 @@ module.exports = async function handler(req, res) {
   };
 
   // ── machines GET ───────────────────────────────────────
+  // ── Stock livre aux fitness ────────────────────────────
+  // La reserve baisse d'un sachet chaque fois qu'un bac est recharge sur une
+  // borne (api/validate.js, action hopper_refill). Ici on la CONSULTE et on la
+  // recharge apres livraison.
+  if (action === "stock" && req.method === "GET") {
+    try {
+      await sql`
+        CREATE TABLE IF NOT EXISTS gym_stock (
+          gym_id     INTEGER NOT NULL,
+          product    TEXT NOT NULL,
+          grams      INTEGER NOT NULL DEFAULT 0,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (gym_id, product)
+        )`;
+      const rows = await sql`
+        SELECT s.gym_id, g.name AS gym_name, s.product, s.grams, s.updated_at
+        FROM gym_stock s LEFT JOIN gyms g ON g.id = s.gym_id
+        ORDER BY g.name, s.product`;
+      return res.json({ stock: rows });
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
+  if (action === "stock" && req.method === "POST") {
+    const { gym_id, product, grams } = req.body || {};
+    if (!gym_id || !product) return res.status(400).json({ error:"gym_id et product requis." });
+    const g = parseInt(grams);
+    if (!Number.isFinite(g) || g < 0) return res.status(400).json({ error:"Quantité invalide." });
+    try {
+      await sql`
+        CREATE TABLE IF NOT EXISTS gym_stock (
+          gym_id     INTEGER NOT NULL,
+          product    TEXT NOT NULL,
+          grams      INTEGER NOT NULL DEFAULT 0,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (gym_id, product)
+        )`;
+      // Valeur ABSOLUE et non cumulative : on saisit le stock reellement
+      // present apres livraison, ce qui permet aussi de corriger un ecart.
+      await sql`
+        INSERT INTO gym_stock (gym_id, product, grams, updated_at)
+        VALUES (${gym_id}, ${product}, ${g}, NOW())
+        ON CONFLICT (gym_id, product) DO UPDATE SET grams = ${g}, updated_at = NOW()`;
+      return res.json({ ok:true });
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
+  // ── Messages laisses par les clients sur les bornes ────
+  if (action === "feedback" && req.method === "GET") {
+    try {
+      await sql`
+        CREATE TABLE IF NOT EXISTS feedback (
+          id         SERIAL PRIMARY KEY,
+          machine_id TEXT,
+          message    TEXT NOT NULL,
+          phone      TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`;
+      const rows = await sql`
+        SELECT id, machine_id, message, phone, created_at
+        FROM feedback ORDER BY created_at DESC LIMIT 200`;
+      return res.json({ feedback: rows });
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
   if (action === "machines" && req.method === "GET") {
     try {
       await ensureMachinesTable();
