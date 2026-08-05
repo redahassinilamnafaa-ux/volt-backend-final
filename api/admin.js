@@ -491,10 +491,10 @@ module.exports = async function handler(req, res) {
       // present apres livraison, ce qui permet aussi de corriger un ecart.
       await sql`
         INSERT INTO gym_stock (gym_id, product, grams, updated_at)
-        VALUES (${gym_id}, ${product}, ${g}, NOW())
+        VALUES (${parseInt(gym_id)}, ${product}, ${g}, NOW())
         ON CONFLICT (gym_id, product) DO UPDATE SET grams = ${g}, updated_at = NOW()`;
       return res.json({ ok:true });
-    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur.", detail: e.message }); }
   }
 
   // ── Distributions echouees ─────────────────────────────
