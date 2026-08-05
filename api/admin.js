@@ -6,6 +6,29 @@ const { signToken, requireAuth } = require("../lib/auth");
 const { computeSubscription, computeCustomWindow, daysLeft, parseDayInput, fmtCH } = require("../lib/subscription");
 const { ensureSubEventsTable, logSubEvent } = require("../lib/subEvents");
 const { ensurePauseColumns, setPause, cancelPause } = require("../lib/subPause");
+
+/**
+ * Reserve de poudre livree a chaque salle.
+ *
+ * gym_id en TEXT et non INTEGER : les migrations de ce fichier declarent des
+ * entiers, mais elles ne se sont jamais appliquees aux tables deja existantes —
+ * en base reelle les identifiants de salle sont du texte. Une premiere version
+ * en INTEGER faisait echouer tout enregistrement de stock. Meme correction que
+ * celle deja faite sur vends.gym_id.
+ */
+async function ensureGymStockTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS gym_stock (
+      gym_id     TEXT NOT NULL,
+      product    TEXT NOT NULL,
+      grams      INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (gym_id, product)
+    )`;
+  // Rattrape une table creee par la version precedente, en INTEGER.
+  try { await sql`ALTER TABLE gym_stock ALTER COLUMN gym_id TYPE TEXT USING gym_id::text`; }
+  catch (e) { /* deja en TEXT */ }
+}
 const { isPaused } = require("../lib/subscription");
 module.exports = async function handler(req, res) {
   cors(req, res);
@@ -457,20 +480,13 @@ module.exports = async function handler(req, res) {
   // recharge apres livraison.
   if (action === "stock" && req.method === "GET") {
     try {
-      await sql`
-        CREATE TABLE IF NOT EXISTS gym_stock (
-          gym_id     INTEGER NOT NULL,
-          product    TEXT NOT NULL,
-          grams      INTEGER NOT NULL DEFAULT 0,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          PRIMARY KEY (gym_id, product)
-        )`;
+      await ensureGymStockTable();
       const rows = await sql`
         SELECT s.gym_id, g.name AS gym_name, s.product, s.grams, s.updated_at
-        FROM gym_stock s LEFT JOIN gyms g ON g.id = s.gym_id
+        FROM gym_stock s LEFT JOIN gyms g ON g.id::text = s.gym_id
         ORDER BY g.name, s.product`;
       return res.json({ stock: rows });
-    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur.", detail: e.message }); }
   }
 
   if (action === "stock" && req.method === "POST") {
@@ -479,19 +495,12 @@ module.exports = async function handler(req, res) {
     const g = parseInt(grams);
     if (!Number.isFinite(g) || g < 0) return res.status(400).json({ error:"Quantité invalide." });
     try {
-      await sql`
-        CREATE TABLE IF NOT EXISTS gym_stock (
-          gym_id     INTEGER NOT NULL,
-          product    TEXT NOT NULL,
-          grams      INTEGER NOT NULL DEFAULT 0,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          PRIMARY KEY (gym_id, product)
-        )`;
+      await ensureGymStockTable();
       // Valeur ABSOLUE et non cumulative : on saisit le stock reellement
       // present apres livraison, ce qui permet aussi de corriger un ecart.
       await sql`
         INSERT INTO gym_stock (gym_id, product, grams, updated_at)
-        VALUES (${parseInt(gym_id)}, ${product}, ${g}, NOW())
+        VALUES (${String(gym_id)}, ${product}, ${g}, NOW())
         ON CONFLICT (gym_id, product) DO UPDATE SET grams = ${g}, updated_at = NOW()`;
       return res.json({ ok:true });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur.", detail: e.message }); }

@@ -477,15 +477,22 @@ async function recordFailure(order_id, machine_id, reason, gym_id) {
 /** Reserve restante en deca de laquelle une livraison doit etre planifiee. */
 const STOCK_ALERT_G = 1000;
 
+/**
+ * gym_id en TEXT : les identifiants de salle sont du texte en base reelle,
+ * malgre les migrations qui declarent des entiers (elles ne se sont jamais
+ * appliquees aux tables preexistantes). Meme correction que sur vends.gym_id.
+ */
 async function ensureGymStockTable() {
   await sql`
     CREATE TABLE IF NOT EXISTS gym_stock (
-      gym_id     INTEGER NOT NULL,
+      gym_id     TEXT NOT NULL,
       product    TEXT NOT NULL,
       grams      INTEGER NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (gym_id, product)
     )`;
+  try { await sql`ALTER TABLE gym_stock ALTER COLUMN gym_id TYPE TEXT USING gym_id::text`; }
+  catch (e) { /* deja en TEXT */ }
 }
 
 /**
@@ -514,7 +521,7 @@ async function hopperRefill(body, res) {
     // durablement le suivi. Le decompte ne s'applique qu'a un stock connu.
     const [row] = await sql`
       INSERT INTO gym_stock (gym_id, product, grams, updated_at)
-      VALUES (${m.gym_id}, ${product}, 0, NOW())
+      VALUES (${String(m.gym_id)}, ${product}, 0, NOW())
       ON CONFLICT (gym_id, product) DO UPDATE
         SET grams = GREATEST(0, gym_stock.grams - ${qty}), updated_at = NOW()
       RETURNING grams`;
@@ -548,7 +555,9 @@ async function ensureFeedbackTable() {
     )`;
   // Ajoutee apres coup : la salle concernee, pour que le gerant ne voie que
   // les messages de SES bornes.
-  await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS gym_id INTEGER`;
+  await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS gym_id TEXT`;
+  try { await sql`ALTER TABLE feedback ALTER COLUMN gym_id TYPE TEXT USING gym_id::text`; }
+  catch (e) { /* deja en TEXT */ }
 }
 
 /**
@@ -575,7 +584,7 @@ async function clientFeedback(body, res) {
     }
     await sql`
       INSERT INTO feedback (machine_id, message, phone, gym_id)
-      VALUES (${body.machine_id || null}, ${message}, ${phone || null}, ${gym ? gym.id : null})`;
+      VALUES (${body.machine_id || null}, ${message}, ${phone || null}, ${gym ? String(gym.id) : null})`;
 
     const recipients = [process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL];
     if (gym && gym.email) recipients.push(gym.email);

@@ -70,7 +70,9 @@ module.exports = async function handler(req, res) {
             phone      TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )`;
-        await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS gym_id INTEGER`;
+        // TEXT : en base reelle les identifiants de salle sont du texte, malgre
+        // les migrations qui declarent des entiers.
+        await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS gym_id TEXT`;
         await sql`ALTER TABLE vends ADD COLUMN IF NOT EXISTS fail_reason TEXT`;
       } catch (e) {
         console.warn("[fitness] preparation des tables:", e.message);
@@ -83,7 +85,7 @@ module.exports = async function handler(req, res) {
                  l.water_ml, l.water_capacity_ml, l.hoppers, l.updated_at
           FROM machines m
           LEFT JOIN machine_levels l ON l.machine_id = m.machine_id
-          WHERE m.gym_id = ${gym_id} AND m.active = true
+          WHERE m.gym_id::text = ${String(gym_id)} AND m.active = true
           ORDER BY m.name`;
       } catch (e) {
         console.warn("[fitness] stocks indisponibles:", e.message);
@@ -96,7 +98,7 @@ module.exports = async function handler(req, res) {
       try {
         feedback = await sql`
           SELECT id, machine_id, message, phone, created_at
-          FROM feedback WHERE gym_id = ${gym_id}
+          FROM feedback WHERE gym_id::text = ${String(gym_id)}
           ORDER BY created_at DESC LIMIT 50`;
       } catch (e) { console.warn("[fitness] messages indisponibles:", e.message); }
       try {
