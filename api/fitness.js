@@ -49,6 +49,33 @@ module.exports = async function handler(req, res) {
       // tableau de bord doit continuer a s'afficher meme si aucune borne n'a
       // encore rien remonte, ou si les tables n'existent pas sur une base
       // ancienne. Alimente par la tablette (api/validate.js, action commit).
+      // Ces tables ne naissent qu'a la premiere distribution / au premier
+      // message. Sans cette creation prealable, la requete echouait sur une
+      // table absente, l'erreur etait avalee, et le tableau de bord restait
+      // desesperement vide tant qu'aucune boisson n'avait ete servie.
+      try {
+        await sql`
+          CREATE TABLE IF NOT EXISTS machine_levels (
+            machine_id        TEXT PRIMARY KEY,
+            water_ml          INTEGER,
+            water_capacity_ml INTEGER,
+            hoppers           JSONB NOT NULL DEFAULT '[]'::jsonb,
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )`;
+        await sql`
+          CREATE TABLE IF NOT EXISTS feedback (
+            id         SERIAL PRIMARY KEY,
+            machine_id TEXT,
+            message    TEXT NOT NULL,
+            phone      TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )`;
+        await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS gym_id INTEGER`;
+        await sql`ALTER TABLE vends ADD COLUMN IF NOT EXISTS fail_reason TEXT`;
+      } catch (e) {
+        console.warn("[fitness] preparation des tables:", e.message);
+      }
+
       let machines = [];
       try {
         machines = await sql`
