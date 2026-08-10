@@ -40,7 +40,7 @@ module.exports = async function handler(req, res) {
   const auth = requireAuth(req);
   if (!auth) return res.status(401).json({ error: "Non authentifié." });
 
-  const { plan_id, method, return_url, promo_code } = req.body || {};
+  const { plan_id, method, return_url, promo_code, renew } = req.body || {};
   const priceId = PRICE_IDS[plan_id];
   if (!priceId) return res.status(400).json({ error: "Plan invalide." });
 
@@ -73,6 +73,48 @@ module.exports = async function handler(req, res) {
       });
       customerId = customer.id;
       await sql`UPDATE users SET stripe_customer = ${customerId} WHERE id = ${u.id}`;
+    }
+
+    // ── RENOUVELLEMENT ANTICIPE : toujours un paiement UNIQUE ─────────
+    //
+    // Le client paie la periode suivante avant la fin de la sienne. On ne cree
+    // JAMAIS d'abonnement Stripe ici : un abonne par carte en a deja un qui se
+    // reconduit seul, et lui en creer un second le ferait prelever deux fois.
+    // pay-confirm reconnait un paiement sans abonnement et prolonge la date
+    // d'echeance existante (computeSubscription, extend) — le client ne perd
+    // donc aucun jour.
+    if (renew) {
+      const price = await stripe.prices.retrieve(priceId);
+      const amount = discounted(price.unit_amount, coupon);
+      const isTwint = method === 'twint';
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount,
+        currency: 'chf',
+        customer: customerId,
+        payment_method_types: [isTwint ? 'twint' : 'card'],
+        metadata: {
+          plan_id,
+          volt_user_id: String(u.id),
+          price_id: priceId,
+          // Le webhook s'appuie sur ce champ pour activer si l'app se ferme
+          // pendant la redirection.
+          payment_type: isTwint ? 'twint' : 'renew_card',
+          renewal: '1',
+          promo_code: coupon ? String(promo_code).trim().toUpperCase() : '',
+        },
+      });
+      return res.json({
+        client_secret:     paymentIntent.client_secret,
+        payment_intent_id: paymentIntent.id,
+        customer_id:       customerId,
+        price_id:          priceId,
+        plan_id,
+        method:            isTwint ? 'twint' : 'card',
+        renewal:           true,
+        amount_cents:      amount,
+        original_cents:    price.unit_amount,
+        discount_applied:  Boolean(coupon),
+      });
     }
 
     // ── TWINT : PaymentIntent one-time ────────────────────────────────

@@ -123,7 +123,13 @@ module.exports = async function handler(req, res) {
 
       case "payment_intent.succeeded": {
         const pi = event.data.object;
-        if (pi.metadata?.payment_type !== "twint") break;
+        // twint : achat ponctuel · renew_card : renouvellement anticipe paye
+        // par carte, qui est lui aussi un paiement unique et non un abonnement.
+        // Les factures d'abonnement, elles, passent par invoice.paid — les
+        // traiter ici les compterait deux fois.
+        const payType = pi.metadata?.payment_type;
+        if (payType !== "twint" && payType !== "renew_card") break;
+        const payMethod = payType === "twint" ? "twint" : "card";
         const userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
         const planId = pi.metadata?.plan_id;
         if (userId && planId) {
@@ -131,7 +137,7 @@ module.exports = async function handler(req, res) {
           // La ligne payments fait office de verrou -> un seul des deux calcule les dates.
           const inserted = await sql`
             INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
-            VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
+            VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, ${payMethod}, 'success')
             ON CONFLICT (stripe_payment_id) DO NOTHING
             RETURNING id
           `;
@@ -149,7 +155,7 @@ module.exports = async function handler(req, res) {
                     sub_started_at = ${startedAt}, sub_expires_at = ${expiresAt}
                 WHERE id = ${userId}`;
               await logSubEvent(sql, {
-                user_id: userId, event_type: 'payment', source: 'twint',
+                user_id: userId, event_type: 'payment', source: payMethod,
                 plan: planId, sub_started_at: startedAt, sub_expires_at: expiresAt,
                 note: `CHF ${(pi.amount/100).toFixed(2)} — via webhook Stripe`,
               });
