@@ -506,6 +506,22 @@ module.exports = async function handler(req, res) {
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur.", detail: e.message }); }
   }
 
+  // ── Valider l'email d'un membre a la main ──────────────
+  // Un compte non verifie ne peut PAS generer de QR (api/qr-token.js), meme
+  // abonne et a jour de paiement. Sans ce recours, un client qui n'a jamais
+  // recu son message de verification reste bloque, alors qu'il a paye.
+  if (action === "verify-email" && req.method === "POST") {
+    const { user_id } = req.body || {};
+    if (!user_id) return res.status(400).json({ error: "user_id requis." });
+    try {
+      const rows = await sql`
+        UPDATE users SET email_verified = true
+        WHERE id = ${user_id} RETURNING id, email`;
+      if (!rows.length) return res.status(404).json({ error: "Membre introuvable." });
+      return res.json({ ok: true, email: rows[0].email });
+    } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur.", detail: e.message }); }
+  }
+
   // ── Distributions echouees ─────────────────────────────
   if (action === "faults" && req.method === "GET") {
     try {
