@@ -6,7 +6,7 @@ const { signToken, requireAuth } = require("../lib/auth");
 const { computeSubscription, computeCustomWindow, daysLeft, parseDayInput, fmtCH } = require("../lib/subscription");
 const { ensureSubEventsTable, logSubEvent } = require("../lib/subEvents");
 const { ensurePauseColumns, setPause, cancelPause } = require("../lib/subPause");
-const { ensurePaymentsSchema, insertPayment } = require("../lib/payments");
+const { ensurePaymentsSchema } = require("../lib/payments");
 const Stripe = require("stripe");
 
 /**
@@ -296,62 +296,108 @@ module.exports = async function handler(req, res) {
   // base ne les a jamais vus. Cette action relit les PaymentIntents reussis et
   // reinsere ceux qui manquent, avec leur date d'origine.
   //
-  // Sans effet de bord : insertPayment n'ecrit que ce qui n'existe pas encore,
-  // on peut donc la relancer autant de fois qu'on veut.
+  // Sans effet de bord : seuls les paiements absents sont inseres, on peut donc
+  // la relancer autant de fois qu'on veut.
   if (action === "sync-payments" && req.method === "POST") {
     try {
       if (!process.env.STRIPE_SECRET_KEY) return res.status(500).json({ error: "STRIPE_SECRET_KEY manquante." });
       const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
       await ensurePaymentsSchema(sql);
 
-      let scanned = 0, imported = 0, skipped = 0;
-      let startingAfter = undefined;
+      let scanned = 0, imported = 0, skipped = 0, pages = 0;
+      let startingAfter = req.body?.starting_after || undefined;
+      let cursor = null, truncated = false;
 
-      // 10 pages x 100 = 1000 paiements : largement au-dela de l'historique.
-      for (let page = 0; page < 10; page++) {
+      // Garde-fou de duree : une fonction Vercel est tuee net au-dela de sa
+      // limite, et le client ne recoit qu'un "Erreur serveur" sans explication.
+      // On s'arrete proprement avant, en renvoyant un curseur pour reprendre.
+      const deadline = Date.now() + 45_000;
+
+      for (let page = 0; page < 20; page++) {
+        if (Date.now() > deadline) { truncated = true; break; }
+
         const list = await stripe.paymentIntents.list({
           limit: 100,
           ...(startingAfter ? { starting_after: startingAfter } : {}),
         });
         if (!list.data.length) break;
+        pages++;
+        scanned += list.data.length;
 
-        for (const pi of list.data) {
-          scanned++;
-          if (pi.status !== 'succeeded' || !pi.amount) { skipped++; continue; }
+        const usable = list.data.filter(pi => pi.status === 'succeeded' && pi.amount > 0);
+        skipped += list.data.length - usable.length;
 
-          // Un paiement d'abonnement est enregistre par invoice.paid sous
-          // l'identifiant de la FACTURE. On reutilise la meme cle ici, sinon la
-          // reprise creerait un doublon sous l'identifiant du PaymentIntent.
-          const invId = typeof pi.invoice === 'string' ? pi.invoice : pi.invoice?.id;
-          const key   = invId || pi.id;
+        // Un paiement d'abonnement est enregistre par invoice.paid sous
+        // l'identifiant de la FACTURE. On reutilise la meme cle ici, sinon la
+        // reprise creerait un doublon sous l'identifiant du PaymentIntent.
+        const keyOf = pi => (typeof pi.invoice === 'string' ? pi.invoice : pi.invoice?.id) || pi.id;
 
-          let userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
-          let plan   = pi.metadata?.plan_id || null;
+        // ── 3 requetes par page, et non 2 par paiement ──────────────────────
+        // La version initiale interrogeait la base pour CHAQUE paiement : avec
+        // Neon en HTTP, chaque requete est un aller-retour reseau, et quelques
+        // dizaines de paiements suffisaient a depasser la limite de temps de
+        // Vercel — d'ou le "Erreur serveur" au clic sur le bouton.
+        const keys = [...new Set(usable.map(keyOf))];
+        const already = keys.length
+          ? await sql`SELECT stripe_payment_id FROM payments WHERE stripe_payment_id = ANY(${keys})`
+          : [];
+        const have = new Set(already.map(r => r.stripe_payment_id));
 
-          // Les PaymentIntents d'abonnement portent les metadonnees sur
-          // l'abonnement, pas sur eux : on retombe sur le client Stripe.
-          if ((!userId || !plan) && pi.customer) {
-            const [u] = await sql`SELECT id, plan FROM users WHERE stripe_customer = ${pi.customer}`;
-            if (u) { userId = userId || u.id; plan = plan || u.plan; }
-          }
+        // Les PaymentIntents d'abonnement portent les metadonnees sur
+        // l'abonnement, pas sur eux : on retombe sur le client Stripe.
+        const custIds = [...new Set(usable.map(pi => pi.customer).filter(c => typeof c === 'string'))];
+        const users = custIds.length
+          ? await sql`SELECT id, plan, stripe_customer FROM users WHERE stripe_customer = ANY(${custIds})`
+          : [];
+        const byCustomer = new Map(users.map(u => [u.stripe_customer, u]));
+
+        const seen = new Set();
+        const rows = [];
+        for (const pi of usable) {
+          const key = keyOf(pi);
+          if (have.has(key) || seen.has(key)) { skipped++; continue; }
+
+          const u = typeof pi.customer === 'string' ? byCustomer.get(pi.customer) : null;
+          const metaId = parseInt(pi.metadata?.volt_user_id);
+          const userId = Number.isInteger(metaId) ? metaId : (u ? u.id : null);
           if (!userId) { skipped++; continue; }
 
-          const ok = await insertPayment(sql, {
+          seen.add(key);
+          rows.push({
             userId,
-            plan:      plan || 'unknown',
-            amountChf: pi.amount / 100,
-            stripePaymentId: key,
-            method:    pi.metadata?.payment_type === 'twint' ? 'twint' : 'card',
-            createdAt: new Date(pi.created * 1000),
+            plan:   pi.metadata?.plan_id || u?.plan || 'unknown',
+            amount: pi.amount / 100,
+            key,
+            method: pi.metadata?.payment_type === 'twint' ? 'twint' : 'card',
+            at:     new Date(pi.created * 1000),
           });
-          if (ok) imported++; else skipped++;
         }
 
-        if (!list.has_more) break;
-        startingAfter = list.data[list.data.length - 1].id;
+        // Insertion groupee : une seule requete pour toute la page.
+        if (rows.length) {
+          const ins = await sql`
+            INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status, created_at)
+            SELECT * FROM UNNEST(
+              ${rows.map(r => r.userId)}::int[],
+              ${rows.map(r => r.plan)}::text[],
+              ${rows.map(r => r.amount)}::numeric[],
+              ${rows.map(r => r.key)}::text[],
+              ${rows.map(r => r.method)}::text[],
+              ${rows.map(() => 'success')}::text[],
+              ${rows.map(r => r.at)}::timestamptz[]
+            )
+            RETURNING id`;
+          imported += ins.length;
+        }
+
+        cursor = list.data[list.data.length - 1].id;
+        if (!list.has_more) { cursor = null; break; }
+        startingAfter = cursor;
       }
 
-      return res.json({ ok: true, scanned, imported, skipped });
+      // `next` non nul = il reste des paiements a analyser : relancer l'import
+      // le reprendra exactement ou il s'est arrete.
+      return res.json({ ok: true, scanned, imported, skipped, pages, truncated, next: truncated ? cursor : null });
     } catch(e) {
       console.error("[admin][sync-payments]", e);
       return res.status(500).json({ error: "Erreur serveur.", detail: e.message });
@@ -708,3 +754,7 @@ module.exports = async function handler(req, res) {
 
   return res.status(400).json({ error:"Action inconnue." });
 };
+
+// L'import Stripe peut demander plusieurs secondes : sans cela Vercel coupe la
+// fonction a 10s et le client ne recoit qu'un "Erreur serveur" inexplicable.
+module.exports.config = { maxDuration: 60 };
