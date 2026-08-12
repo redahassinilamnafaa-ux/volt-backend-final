@@ -6,6 +6,7 @@ const Stripe          = require("stripe");
 const { Resend }      = require("resend");
 const { computeSubscription, endOfDayZurich } = require("../lib/subscription");
 const { logSubEvent } = require("../lib/subEvents");
+const { sendIssueReport } = require("../lib/email");
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -147,6 +148,66 @@ module.exports = async function handler(req, res) {
       return res.json({ ok: true });
     } catch (e) {
       console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." });
+    }
+  }
+
+  // ── POST /api/user-update?action=report → Signalement d'un abonne ──
+  //
+  // Enregistre dans `feedback` (visible dans l'admin, page Messages) ET envoie
+  // un email au support. La double ecriture est voulue : l'email alerte tout de
+  // suite, la ligne en base garde la trace meme si l'envoi echoue.
+  if (req.method === "POST" && req.query.action === "report") {
+    const { category, message } = req.body || {};
+    if (!message || !String(message).trim())
+      return res.status(400).json({ error: "Merci de décrire le problème." });
+    if (String(message).length > 4000)
+      return res.status(400).json({ error: "Message trop long (4000 caractères maximum)." });
+
+    // Anti-abus : 5 signalements par heure et par compte.
+    const rl = rateLimit(`report:${auth.id}`, 5, 60 * 60 * 1000);
+    if (!rl.ok) return res.status(429).json({ error: "Trop de signalements envoyés. Réessaie dans une heure." });
+
+    try {
+      const [u] = await sql`
+        SELECT u.first_name, u.last_name, u.email, u.phone, g.name AS gym_name
+        FROM users u LEFT JOIN gyms g ON u.gym_id = g.id
+        WHERE u.id = ${auth.id}`;
+
+      // Colonnes ajoutees a la volee : la table `feedback` a d'abord servi aux
+      // bornes, elle ne connaissait ni l'auteur ni la provenance du message.
+      try {
+        await sql`
+          CREATE TABLE IF NOT EXISTS feedback (
+            id         SERIAL PRIMARY KEY,
+            machine_id TEXT,
+            message    TEXT NOT NULL,
+            phone      TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )`;
+        await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS user_id  TEXT`;
+        await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS source   TEXT`;
+        await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category TEXT`;
+        await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS gym_id   TEXT`;
+      } catch (e) { console.warn("[report] preparation table:", e.message); }
+
+      await sql`
+        INSERT INTO feedback (message, phone, user_id, source, category)
+        VALUES (${String(message).trim()}, ${u?.phone || null}, ${String(auth.id)}, 'app', ${category || null})`;
+
+      // L'email ne doit jamais faire echouer la requete : le signalement est
+      // deja enregistre, et l'abonne n'a pas a subir un probleme d'envoi.
+      try {
+        await sendIssueReport({
+          name: u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() : null,
+          email: u?.email, phone: u?.phone, gymName: u?.gym_name,
+          category, message: String(message).trim(),
+        });
+      } catch (mailErr) { console.error("[report] email:", mailErr); }
+
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error("[api][report]", e);
+      return res.status(500).json({ error: "Erreur serveur." });
     }
   }
 

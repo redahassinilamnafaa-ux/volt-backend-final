@@ -766,10 +766,23 @@ module.exports = async function handler(req, res) {
           phone      TEXT,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )`;
+      // Colonnes ajoutees quand l'app est devenue une source de signalements :
+      // la table ne servait au depart qu'aux bornes et ignorait l'auteur.
+      await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS user_id  TEXT`.catch(()=>{});
+      await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS source   TEXT`.catch(()=>{});
+      await sql`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category TEXT`.catch(()=>{});
       const rows = await sql`
-        SELECT id, machine_id, message, phone, created_at
-        FROM feedback ORDER BY created_at DESC LIMIT 200`;
-      return res.json({ feedback: rows });
+        SELECT f.id, f.machine_id, f.message, f.phone, f.created_at,
+               f.source, f.category,
+               u.first_name, u.last_name, u.email
+        FROM feedback f
+        LEFT JOIN users u ON u.id::text = f.user_id
+        ORDER BY f.created_at DESC LIMIT 200`;
+      return res.json({ feedback: rows.map(f => ({
+        ...f,
+        author: f.first_name ? `${f.first_name} ${f.last_name || ''}`.trim() : null,
+        origin: f.source === 'app' ? 'App' : 'Borne',
+      })) });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
