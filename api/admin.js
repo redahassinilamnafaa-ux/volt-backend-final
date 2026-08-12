@@ -284,8 +284,17 @@ module.exports = async function handler(req, res) {
   // ── payments ───────────────────────────────────────────
   if (action === "payments") {
     try {
-      const rows = await sql`SELECT p.*,u.first_name,u.last_name FROM payments p LEFT JOIN users u ON p.user_id=u.id ORDER BY p.created_at DESC LIMIT 100`;
-      return res.json({ payments: rows.map(p=>({ id:p.id, client:p.first_name+' '+p.last_name, plan:p.plan, amount:parseFloat(p.amount_chf), method:p.method, status:p.status, date:new Date(p.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'}) })) });
+      // La salle est rattachee au CLIENT, pas au paiement : c'est elle qui
+      // determine a qui reverser. Sans cette colonne, un releve Stripe melangeant
+      // plusieurs fitness est impossible a ventiler.
+      const rows = await sql`
+        SELECT p.*, u.first_name, u.last_name,
+               g.name AS gym_name, g.filiale AS gym_filiale
+        FROM payments p
+        LEFT JOIN users u ON p.user_id = u.id
+        LEFT JOIN gyms  g ON u.gym_id  = g.id
+        ORDER BY p.created_at DESC LIMIT 100`;
+      return res.json({ payments: rows.map(p=>({ id:p.id, client:p.first_name+' '+p.last_name, gym:p.gym_name||'—', filiale:p.gym_filiale||'', plan:p.plan, amount:parseFloat(p.amount_chf), method:p.method, status:p.status, date:new Date(p.created_at).toLocaleDateString('fr-CH',{day:'numeric',month:'short',year:'numeric'}) })) });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
