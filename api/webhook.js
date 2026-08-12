@@ -3,6 +3,7 @@ const Stripe = require("stripe");
 const { sendExpiryReminder, sendFailedPayment } = require("../lib/email");
 const { computeSubscription, startOfDayZurich, endOfDayZurich } = require("../lib/subscription");
 const { logSubEvent } = require("../lib/subEvents");
+const { ensurePaymentsSchema, insertPayment } = require("../lib/payments");
 
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -87,11 +88,11 @@ module.exports = async function handler(req, res) {
         if (isBillable && amount > 0) {
           const [usr] = await sql`SELECT id, plan FROM users WHERE stripe_customer = ${customerId}`;
           if (usr) {
-            await sql`
-              INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
-              VALUES (${usr.id}, ${usr.plan || plan || "unknown"}, ${amount}, ${invoice.id}, 'card', 'success')
-              ON CONFLICT (stripe_payment_id) DO NOTHING
-            `;
+            await ensurePaymentsSchema(sql);
+            await insertPayment(sql, {
+              userId: usr.id, plan: usr.plan || plan || "unknown", amountChf: amount,
+              stripePaymentId: invoice.id, method: 'card',
+            });
             await logSubEvent(sql, {
               user_id: usr.id,
               event_type: invoice.billing_reason === "subscription_create" ? 'payment' : 'renewal',
@@ -135,13 +136,12 @@ module.exports = async function handler(req, res) {
         if (userId && planId) {
           // Idempotence : /api/pay-confirm et ce webhook reçoivent le même paiement.
           // La ligne payments fait office de verrou -> un seul des deux calcule les dates.
-          const inserted = await sql`
-            INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
-            VALUES (${userId}, ${planId}, ${pi.amount / 100}, ${pi.id}, ${payMethod}, 'success')
-            ON CONFLICT (stripe_payment_id) DO NOTHING
-            RETURNING id
-          `;
-          if (inserted.length > 0) {
+          await ensurePaymentsSchema(sql);
+          const inserted = await insertPayment(sql, {
+            userId, plan: planId, amountChf: pi.amount / 100,
+            stripePaymentId: pi.id, method: payMethod,
+          });
+          if (inserted) {
             const [u] = await sql`SELECT sub_expires_at FROM users WHERE id = ${userId}`;
             try {
               const { startedAt, expiresAt } = computeSubscription({

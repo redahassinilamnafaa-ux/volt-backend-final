@@ -6,6 +6,8 @@ const { signToken, requireAuth } = require("../lib/auth");
 const { computeSubscription, computeCustomWindow, daysLeft, parseDayInput, fmtCH } = require("../lib/subscription");
 const { ensureSubEventsTable, logSubEvent } = require("../lib/subEvents");
 const { ensurePauseColumns, setPause, cancelPause } = require("../lib/subPause");
+const { ensurePaymentsSchema, insertPayment } = require("../lib/payments");
+const Stripe = require("stripe");
 
 /**
  * Reserve de poudre livree a chaque salle.
@@ -287,6 +289,75 @@ module.exports = async function handler(req, res) {
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
+  // ── REPRISE des paiements depuis Stripe ────────────────
+  //
+  // Les paiements encaisses pendant que l'INSERT echouait (index unique
+  // manquant, voir lib/payments.js) ne sont RECUPERABLES QUE chez Stripe : la
+  // base ne les a jamais vus. Cette action relit les PaymentIntents reussis et
+  // reinsere ceux qui manquent, avec leur date d'origine.
+  //
+  // Sans effet de bord : insertPayment n'ecrit que ce qui n'existe pas encore,
+  // on peut donc la relancer autant de fois qu'on veut.
+  if (action === "sync-payments" && req.method === "POST") {
+    try {
+      if (!process.env.STRIPE_SECRET_KEY) return res.status(500).json({ error: "STRIPE_SECRET_KEY manquante." });
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+      await ensurePaymentsSchema(sql);
+
+      let scanned = 0, imported = 0, skipped = 0;
+      let startingAfter = undefined;
+
+      // 10 pages x 100 = 1000 paiements : largement au-dela de l'historique.
+      for (let page = 0; page < 10; page++) {
+        const list = await stripe.paymentIntents.list({
+          limit: 100,
+          ...(startingAfter ? { starting_after: startingAfter } : {}),
+        });
+        if (!list.data.length) break;
+
+        for (const pi of list.data) {
+          scanned++;
+          if (pi.status !== 'succeeded' || !pi.amount) { skipped++; continue; }
+
+          // Un paiement d'abonnement est enregistre par invoice.paid sous
+          // l'identifiant de la FACTURE. On reutilise la meme cle ici, sinon la
+          // reprise creerait un doublon sous l'identifiant du PaymentIntent.
+          const invId = typeof pi.invoice === 'string' ? pi.invoice : pi.invoice?.id;
+          const key   = invId || pi.id;
+
+          let userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
+          let plan   = pi.metadata?.plan_id || null;
+
+          // Les PaymentIntents d'abonnement portent les metadonnees sur
+          // l'abonnement, pas sur eux : on retombe sur le client Stripe.
+          if ((!userId || !plan) && pi.customer) {
+            const [u] = await sql`SELECT id, plan FROM users WHERE stripe_customer = ${pi.customer}`;
+            if (u) { userId = userId || u.id; plan = plan || u.plan; }
+          }
+          if (!userId) { skipped++; continue; }
+
+          const ok = await insertPayment(sql, {
+            userId,
+            plan:      plan || 'unknown',
+            amountChf: pi.amount / 100,
+            stripePaymentId: key,
+            method:    pi.metadata?.payment_type === 'twint' ? 'twint' : 'card',
+            createdAt: new Date(pi.created * 1000),
+          });
+          if (ok) imported++; else skipped++;
+        }
+
+        if (!list.has_more) break;
+        startingAfter = list.data[list.data.length - 1].id;
+      }
+
+      return res.json({ ok: true, scanned, imported, skipped });
+    } catch(e) {
+      console.error("[admin][sync-payments]", e);
+      return res.status(500).json({ error: "Erreur serveur.", detail: e.message });
+    }
+  }
+
   // ── gyms GET ───────────────────────────────────────────
   if (action === "gyms" && req.method === "GET") {
     try {
@@ -445,6 +516,9 @@ module.exports = async function handler(req, res) {
       WHERE sub_started_at IS NULL AND sub_expires_at IS NOT NULL`);
     await run("scans.gym_id",        sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS gym_id INTEGER`);
     await run("scans.machine_id",    sql`ALTER TABLE scans ADD COLUMN IF NOT EXISTS machine_id VARCHAR(100)`);
+    // Table payments + index unique sur stripe_payment_id. Son absence faisait
+    // echouer toutes les insertions de paiement (voir lib/payments.js).
+    await run("payments schema",     ensurePaymentsSchema(sql));
 
     return res.json({ ok: steps.every(s => s.ok), steps });
   }
