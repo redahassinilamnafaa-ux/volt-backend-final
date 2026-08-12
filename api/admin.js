@@ -84,15 +84,37 @@ module.exports = async function handler(req, res) {
   // ── stats ──────────────────────────────────────────────
   if (action === "stats") {
     try {
-      const [[subs],[users],[gyms],[scans],[rm],[rt]] = await Promise.all([
+      const [[subs],[users],[gyms],[scans],[rm],[rt],months] = await Promise.all([
         sql`SELECT COUNT(*) as n FROM users WHERE subscribed=true`,
         sql`SELECT COUNT(*) as n FROM users`,
         sql`SELECT COUNT(*) as n FROM gyms`,
         sql`SELECT COUNT(*) as n FROM scans WHERE scanned_at>NOW()-INTERVAL '30 days'`,
         sql`SELECT COALESCE(SUM(amount_chf),0) as n FROM payments WHERE status='success' AND created_at>NOW()-INTERVAL '30 days'`,
         sql`SELECT COALESCE(SUM(amount_chf),0) as n FROM payments WHERE status='success'`,
+        // Serie sur 12 mois, boissons ET revenus. generate_series remplit les
+        // mois sans activite : sans cela le graphe les sauterait et la
+        // comparaison d'un mois a l'autre serait faussee. Heure de Zurich,
+        // sinon les scans de fin de mois en soiree basculent sur le mois suivant.
+        sql`
+          SELECT TO_CHAR(m.d, 'YYYY-MM') AS ym,
+                 COALESCE(sc.n, 0)   AS n,
+                 COALESCE(pa.rev, 0) AS rev
+          FROM generate_series(
+                 DATE_TRUNC('month', NOW() AT TIME ZONE 'Europe/Zurich') - INTERVAL '11 months',
+                 DATE_TRUNC('month', NOW() AT TIME ZONE 'Europe/Zurich'),
+                 INTERVAL '1 month') AS m(d)
+          LEFT JOIN (
+            SELECT DATE_TRUNC('month', scanned_at AT TIME ZONE 'Europe/Zurich') AS d, COUNT(*) AS n
+            FROM scans GROUP BY 1
+          ) sc ON sc.d = m.d
+          LEFT JOIN (
+            SELECT DATE_TRUNC('month', created_at AT TIME ZONE 'Europe/Zurich') AS d, SUM(amount_chf) AS rev
+            FROM payments WHERE status = 'success' GROUP BY 1
+          ) pa ON pa.d = m.d
+          ORDER BY m.d ASC`,
       ]);
-      return res.json({ subscribers:parseInt(subs.n), total_users:parseInt(users.n), total_gyms:parseInt(gyms.n), scans_month:parseInt(scans.n), rev_month:parseFloat(rm.n), rev_total:parseFloat(rt.n) });
+      return res.json({ subscribers:parseInt(subs.n), total_users:parseInt(users.n), total_gyms:parseInt(gyms.n), scans_month:parseInt(scans.n), rev_month:parseFloat(rm.n), rev_total:parseFloat(rt.n),
+        months: months.map(r => ({ ym: r.ym, n: parseInt(r.n), rev: parseFloat(r.rev) })) });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
   }
 
