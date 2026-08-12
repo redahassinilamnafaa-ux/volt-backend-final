@@ -1,60 +1,156 @@
-const cors       = require("../lib/cors");
-const sql        = require("../lib/db");
-const { Resend } = require("resend");
+const cors = require("../lib/cors");
+const sql  = require("../lib/db");
+const { sendWelcomeEmail } = require("../lib/email");
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const APP_URL = "https://volt-energy.ch/VoltApp";
 
-const welcomeHtml = (firstName) => `<style>@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&display=swap');</style><div style="background:#040c22;padding:32px 16px;font-family:Arial,sans-serif"><div style="max-width:460px;margin:0 auto"><div style="background:#071433;border-radius:18px;overflow:hidden"><div style="background:#071433;padding:32px 32px 22px;border-bottom:1px solid rgba(0,87,255,.14)"><div style="font-size:76px;font-weight:900;color:#FFFFFF;letter-spacing:-2px;line-height:.9;font-family:'Barlow Condensed','Arial Black',Arial,sans-serif">VOLT.</div><div style="width:44px;height:4px;background:#0057FF;margin-top:14px;border-radius:2px"></div></div><div style="padding:28px 32px 22px"><div style="font-size:20px;font-weight:800;color:#FFFFFF;margin-bottom:10px">Bienvenue chez VOLT. ⚡</div><div style="font-size:14px;color:rgba(255,255,255,.55);line-height:1.8;margin-bottom:24px">Salut <strong style="color:#FFFFFF">${firstName}</strong>,<br/>Ton compte est <strong style="color:#00C47A">confirmé et actif</strong>. Tu peux maintenant te connecter et profiter de tes boissons énergisantes.</div><a href="https://volt-energy.ch/VoltApp.html" style="display:block;background:#0057FF;color:#FFFFFF;text-align:center;padding:15px 20px;border-radius:12px;font-size:15px;font-weight:900;text-decoration:none;letter-spacing:.04em;font-family:Arial Black,Arial,sans-serif">SE CONNECTER →</a></div><div style="padding:14px 32px;border-top:1px solid rgba(255,255,255,.05);display:flex;align-items:center;justify-content:space-between"><div style="font-size:18px;font-weight:900;color:rgba(255,255,255,.2);letter-spacing:-2px;font-family:Arial Black,Arial,sans-serif">VOLT.</div><div style="font-size:11px;color:rgba(255,255,255,.18)">Crissier · Switzerland</div></div></div></div></div>`;
+/**
+ * ══ POURQUOI UNE CONFIRMATION EN DEUX TEMPS ═══════════════════════════════
+ *
+ * La version precedente validait le compte sur un simple GET, puis SUPPRIMAIT
+ * le jeton. Or les messageries d'entreprise (Microsoft Defender / Outlook
+ * SafeLinks, tres repandu sur les adresses professionnelles et administratives)
+ * PRE-VISITENT automatiquement les liens des emails pour les analyser.
+ *
+ * Consequence observee en production : le scanner declenchait la confirmation
+ * dans la minute suivant l'envoi — compte valide, email de bienvenue expedie —
+ * et lorsque l'abonne cliquait vraiment, le jeton n'existait plus : « Lien
+ * expire ». Trois symptomes, une seule cause.
+ *
+ * Un scanner n'emet que des GET. On separe donc :
+ *   GET  → affiche une page avec un bouton. Ne modifie RIEN.
+ *   POST → confirme reellement, declenche l'email de bienvenue.
+ *
+ * L'operation est en plus idempotente : un compte deja confirme renvoie la page
+ * de succes plutot qu'une erreur, ce qui couvre les doubles clics et les
+ * rechargements de page.
+ */
+
+function page({ title, message, action, buttonLabel, tone = "ok" }) {
+  const accent = tone === "error" ? "#FF3B5C" : "#0057FF";
+  return `<!DOCTYPE html><html lang="fr"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>VOLT. — ${title}</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       padding:24px;background:linear-gradient(160deg,#060D2E 0%,#0A1A5C 60%,#0D2280 100%);
+       font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:#fff}
+  .card{width:100%;max-width:420px;text-align:center}
+  .logo{font-size:46px;font-weight:900;letter-spacing:-2px;margin-bottom:28px}
+  .logo span{color:#2979FF}
+  h1{font-size:26px;font-weight:800;margin:0 0 14px;line-height:1.25}
+  p{font-size:15px;line-height:1.65;color:rgba(255,255,255,.62);margin:0 0 28px}
+  .btn{display:block;width:100%;border:0;cursor:pointer;padding:16px 20px;border-radius:14px;
+       background:${accent};color:#fff;font-size:15px;font-weight:800;letter-spacing:.03em;
+       text-decoration:none;font-family:inherit}
+  .btn:active{opacity:.85}
+  .link{display:inline-block;margin-top:18px;font-size:13px;color:rgba(255,255,255,.45);text-decoration:none}
+</style></head><body>
+  <div class="card">
+    <div class="logo">VOLT<span>.</span></div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+    ${action
+      ? `<form method="POST" action="${action}"><button class="btn" type="submit">${buttonLabel}</button></form>`
+      : `<a class="btn" href="${APP_URL}">${buttonLabel}</a>`}
+    <a class="link" href="${APP_URL}">Retour à l'application</a>
+  </div>
+</body></html>`;
+}
+
+function send(res, html, status = 200) {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  // Empeche toute mise en cache par un proxy de messagerie.
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(status).send(html);
+}
 
 module.exports = async function handler(req, res) {
   cors(req, res);
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const { token } = req.query;
-  if (!token) return res.status(400).send("Token manquant.");
+  if (!token) {
+    return send(res, page({
+      title: "Lien invalide",
+      message: "Ce lien de confirmation est incomplet. Ouvre celui reçu par email.",
+      buttonLabel: "Ouvrir l'application", tone: "error",
+    }), 400);
+  }
 
   try {
-    const tokens = await sql`
-      SELECT * FROM verify_tokens
-      WHERE token = ${token}
-      AND expires_at > NOW()
-    `;
+    const [row] = await sql`
+      SELECT user_id FROM verify_tokens
+      WHERE token = ${token} AND expires_at > NOW()`;
 
-    if (!tokens.length) {
-      return res.redirect("https://volt-energy.ch/VoltApp.html?verify=expired");
+    // Jeton inconnu ou expire : le compte a peut-etre deja ete confirme lors
+    // d'une visite precedente, auquel cas ce n'est pas une erreur.
+    if (!row) {
+      return send(res, page({
+        title: "Lien expiré",
+        message: "Ce lien n'est plus valide. Connecte-toi à l'application pour en recevoir un nouveau — si ton compte est déjà confirmé, tu peux simplement te connecter.",
+        buttonLabel: "Ouvrir l'application", tone: "error",
+      }), 410);
     }
 
-    const user_id = tokens[0].user_id;
+    const [user] = await sql`
+      SELECT id, email, first_name, email_verified FROM users
+      WHERE id::text = ${String(row.user_id)}`;
 
-    const users = await sql`
-      SELECT id, email, first_name FROM users
-      WHERE id::text = ${user_id}
-    `;
-
-    if (!users.length) {
-      return res.redirect("https://volt-energy.ch/VoltApp.html?verify=expired");
+    if (!user) {
+      return send(res, page({
+        title: "Compte introuvable",
+        message: "Ce compte n'existe plus. Tu peux en créer un nouveau depuis l'application.",
+        buttonLabel: "Ouvrir l'application", tone: "error",
+      }), 404);
     }
 
-    const { id, email, first_name } = users[0];
+    // ── GET : on n'ecrit RIEN. C'est ce qui rend le lien insensible aux
+    //         scanners de messagerie, qui n'emettent jamais de POST.
+    if (req.method !== "POST") {
+      if (user.email_verified) {
+        return send(res, page({
+          title: "Compte déjà confirmé",
+          message: "Ton adresse est validée. Tu peux te connecter dès maintenant.",
+          buttonLabel: "Se connecter",
+        }));
+      }
+      return send(res, page({
+        title: "Confirme ton email",
+        message: `Dernière étape pour activer ton compte VOLT.<br/><strong style="color:#fff">${user.email}</strong>`,
+        action: `/api/verify-email?token=${encodeURIComponent(token)}`,
+        buttonLabel: "CONFIRMER MON EMAIL",
+      }));
+    }
 
-    await sql`UPDATE users SET email_verified = true WHERE id = ${id}`;
+    // ── POST : confirmation reelle, declenchee par l'abonne lui-meme.
+    const wasVerified = user.email_verified;
+    if (!wasVerified) {
+      await sql`UPDATE users SET email_verified = true WHERE id = ${user.id}`;
+    }
+    // Le jeton n'est supprime qu'ici : tant qu'il vit, un rechargement de page
+    // reste sans consequence.
     await sql`DELETE FROM verify_tokens WHERE token = ${token}`;
 
-    try {
-      await resend.emails.send({
-        from: "VOLT. <noreply@volt-energy.ch>",
-        to: email,
-        subject: "⚡ Bienvenue chez VOLT. — Ton compte est actif !",
-        html: welcomeHtml(first_name)
-      });
-    } catch(e) {
-      console.error("Welcome email error:", e);
+    // Envoye une seule fois, et jamais avant que l'abonne ait confirme.
+    if (!wasVerified) {
+      try { await sendWelcomeEmail(user.email, user.first_name || ""); }
+      catch (e) { console.error("[verify-email] welcome:", e); }
     }
 
-    return res.redirect("https://volt-energy.ch/VoltApp.html?verify=success");
+    return send(res, page({
+      title: "Compte confirmé ⚡",
+      message: "Ton adresse est validée et ton compte est actif. Bienvenue chez VOLT. !",
+      buttonLabel: "Se connecter",
+    }));
 
-  } catch(e) {
+  } catch (e) {
     console.error("[verify-email]", e);
-    return res.status(500).json({ error: "Erreur serveur." });
+    return send(res, page({
+      title: "Erreur",
+      message: "Une erreur est survenue. Réessaie dans quelques instants.",
+      buttonLabel: "Ouvrir l'application", tone: "error",
+    }), 500);
   }
 };
