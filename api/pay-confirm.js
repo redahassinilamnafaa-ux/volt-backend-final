@@ -6,6 +6,7 @@ const stripe          = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { sendReceipt } = require("../lib/email");
 const { computeSubscription, monthsForPlan, startOfDayZurich, endOfDayZurich } = require("../lib/subscription");
 const { logSubEvent } = require("../lib/subEvents");
+const { ensurePaymentsSchema, insertPayment } = require("../lib/payments");
 
 module.exports = async function handler(req, res) {
   cors(req, res);
@@ -30,11 +31,9 @@ module.exports = async function handler(req, res) {
 
       if (!monthsForPlan(pidPlan)) return res.status(400).json({ error: "Plan invalide." });
 
-      const [uBefore] = await sql`SELECT referred_by, subscribed, sub_expires_at FROM users WHERE id = ${auth.id}`;
+      await ensurePaymentsSchema(sql);
 
-      // Idempotence : si ce PaymentIntent a déjà été encaissé, on ne recalcule RIEN.
-      const [already] = await sql`SELECT id FROM payments WHERE stripe_payment_id = ${pi.id}`;
-      if (already) return res.json({ ok: true, already: true });
+      const [uBefore] = await sql`SELECT referred_by, subscribed, sub_expires_at FROM users WHERE id = ${auth.id}`;
 
       const { startedAt, expiresAt } = computeSubscription({
         plan: pidPlan,
@@ -43,16 +42,26 @@ module.exports = async function handler(req, res) {
       });
       const exp = expiresAt;
 
+      // ── Le paiement s'enregistre AVANT l'activation ────────────────────
+      // L'ordre inverse laissait passer le cas suivant : abonnement active,
+      // puis echec de l'INSERT -> client abonne mais paiement introuvable dans
+      // l'admin, le fitness et l'app. En ecrivant d'abord, un echec ici
+      // interrompt tout et rien ne diverge.
+      //
+      // insertPayment fait aussi office de VERROU d'idempotence : il ne renvoie
+      // true qu'a la premiere insertion. Si ce PaymentIntent a deja ete encaisse
+      // (par le webhook, ou par un double retour de l'app), on ne recalcule RIEN.
+      const isNew = await insertPayment(sql, {
+        userId: auth.id, plan: pidPlan, amountChf: pi.amount / 100,
+        stripePaymentId: pi.id, method: 'twint',
+      });
+      if (!isNew) return res.json({ ok: true, already: true });
+
       await sql`
         UPDATE users
         SET subscribed = true, plan = ${pidPlan},
             sub_started_at = ${startedAt}, sub_expires_at = ${expiresAt}
         WHERE id = ${auth.id}`;
-      await sql`
-        INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
-        VALUES (${auth.id}, ${pidPlan}, ${pi.amount / 100}, ${pi.id}, 'twint', 'success')
-        ON CONFLICT (stripe_payment_id) DO NOTHING
-      `;
       await logSubEvent(sql, {
         user_id: auth.id, event_type: 'payment', source: 'twint',
         plan: pidPlan, sub_started_at: startedAt, sub_expires_at: expiresAt,
@@ -89,9 +98,7 @@ module.exports = async function handler(req, res) {
     if (pi.customer !== u.stripe_customer)
       return res.status(403).json({ error: "Non autorisé." });
 
-    // Idempotence : ce paiement a déjà été traité -> on ne retouche pas les dates.
-    const [alreadyCard] = await sql`SELECT id FROM payments WHERE stripe_payment_id = ${pi.id}`;
-    if (alreadyCard) return res.json({ ok: true, already: true });
+    await ensurePaymentsSchema(sql);
 
     const sub = pi.invoice?.subscription;
     let startedAt, exp;
@@ -109,18 +116,26 @@ module.exports = async function handler(req, res) {
       exp       = d.expiresAt;
     }
 
+    // Paiement d'abord, activation ensuite — meme raison que pour TWINT
+    // ci-dessus, et sert de verrou d'idempotence.
+    //
+    // CLE : pour un paiement d'abonnement, le webhook invoice.paid enregistre
+    // sous l'identifiant de la FACTURE. En utilisant pi.id ici, la meme somme
+    // etait comptee DEUX fois (une ligne par chemin) et gonflait le CA de
+    // l'admin et des fitness. Les deux chemins partagent desormais la meme cle.
+    const payKey = pi.invoice?.id || pi.id;
+    const isNewCard = await insertPayment(sql, {
+      userId: auth.id, plan: plan_id, amountChf: pi.amount / 100,
+      stripePaymentId: payKey, method: 'card',
+    });
+    if (!isNewCard) return res.json({ ok: true, already: true });
+
     await sql`
       UPDATE users
       SET subscribed = true, plan = ${plan_id},
           sub_started_at = ${startedAt}, sub_expires_at = ${exp},
           stripe_customer = ${u.stripe_customer}
       WHERE id = ${auth.id}`;
-
-    await sql`
-      INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status)
-      VALUES (${auth.id}, ${plan_id}, ${pi.amount / 100}, ${pi.id}, 'card', 'success')
-      ON CONFLICT (stripe_payment_id) DO NOTHING
-    `;
     await logSubEvent(sql, {
       user_id: auth.id, event_type: 'payment', source: 'stripe',
       plan: plan_id, sub_started_at: startedAt, sub_expires_at: exp,
