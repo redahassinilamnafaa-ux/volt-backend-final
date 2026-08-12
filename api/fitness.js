@@ -137,7 +137,7 @@ module.exports = async function handler(req, res) {
       await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS sub_started_at TIMESTAMPTZ`.catch(()=>{});
       await ensurePauseColumns(sql);
       const rows = await sql`
-        SELECT u.id, u.first_name, u.last_name, u.email, u.plan, u.subscribed, u.authorized, u.created_at,
+        SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.plan, u.subscribed, u.authorized, u.created_at,
           u.sub_started_at, u.sub_expires_at, u.sub_paused_from, u.sub_paused_to,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans_month,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id) as scans_total,
@@ -151,6 +151,7 @@ module.exports = async function handler(req, res) {
         name: m.first_name + ' ' + m.last_name,
         initials: ((m.first_name||'?')[0] + (m.last_name||'?')[0]).toUpperCase(),
         email: m.email,
+        phone: m.phone || '',
         plan: m.plan,
         subscribed: m.subscribed,
         authorized: m.authorized,

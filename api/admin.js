@@ -123,7 +123,7 @@ module.exports = async function handler(req, res) {
     try {
       await ensurePauseColumns(sql);
       const rows = await sql`
-        SELECT u.id,u.first_name,u.last_name,u.email,u.plan,u.subscribed,u.authorized,u.email_verified,u.created_at,
+        SELECT u.id,u.first_name,u.last_name,u.email,u.phone,u.plan,u.subscribed,u.authorized,u.email_verified,u.created_at,
           u.gym_id,
           u.sub_started_at, u.sub_expires_at, u.sub_paused_from, u.sub_paused_to,
           g.name as gym_name, g.filiale as gym_filiale,
@@ -134,6 +134,7 @@ module.exports = async function handler(req, res) {
         id:c.id,
         name:c.first_name+' '+c.last_name,
         email:c.email,
+        phone:c.phone||'',
         plan:c.plan,
         subscribed:c.subscribed,
         authorized:c.authorized,
