@@ -171,17 +171,68 @@ module.exports = async function handler(req, res) {
     } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
-  // ── SCANS par jour (30 derniers jours) ─────────────────
+  // ── SCANS par jour (30 derniers jours) + par mois (12 mois) ────
   if (action === "scans") {
     try {
-      const rows = await sql`
-        SELECT DATE(s.scanned_at) as day, COUNT(*) as n
-        FROM scans s JOIN users u ON s.user_id=u.id
-        WHERE u.gym_id=${gym_id} AND s.scanned_at>NOW()-INTERVAL '30 days'
-        GROUP BY DATE(s.scanned_at) ORDER BY day ASC
-      `;
-      return res.json({ scans: rows.map(r => ({ day: r.day, n: parseInt(r.n) })) });
+      const [rows, months] = await Promise.all([
+        sql`
+          SELECT DATE(s.scanned_at) as day, COUNT(*) as n
+          FROM scans s JOIN users u ON s.user_id=u.id
+          WHERE u.gym_id=${gym_id} AND s.scanned_at>NOW()-INTERVAL '30 days'
+          GROUP BY DATE(s.scanned_at) ORDER BY day ASC
+        `,
+        // generate_series remplit les mois sans aucune distribution : sans cela
+        // le graphe sauterait ces mois et fausserait la comparaison visuelle.
+        // Heure de Zurich, comme partout ailleurs dans le projet.
+        sql`
+          SELECT TO_CHAR(m.d, 'YYYY-MM') AS ym, COALESCE(x.n, 0) AS n
+          FROM generate_series(
+                 DATE_TRUNC('month', NOW() AT TIME ZONE 'Europe/Zurich') - INTERVAL '11 months',
+                 DATE_TRUNC('month', NOW() AT TIME ZONE 'Europe/Zurich'),
+                 INTERVAL '1 month') AS m(d)
+          LEFT JOIN (
+            SELECT DATE_TRUNC('month', s.scanned_at AT TIME ZONE 'Europe/Zurich') AS d,
+                   COUNT(*) AS n
+            FROM scans s JOIN users u ON s.user_id = u.id
+            WHERE u.gym_id = ${gym_id}
+            GROUP BY 1
+          ) x ON x.d = m.d
+          ORDER BY m.d ASC
+        `,
+      ]);
+      return res.json({
+        scans:  rows.map(r => ({ day: r.day, n: parseInt(r.n) })),
+        months: months.map(r => ({ ym: r.ym, n: parseInt(r.n) })),
+      });
     } catch(e) { console.error("[api]", e); return res.status(500).json({ error: "Erreur serveur." }); }
+  }
+
+  // ── CONSOMMATION mensuelle d'UN membre (12 mois) ───────
+  if (action === "member-scans" && req.method === "GET") {
+    const { user_id } = req.query;
+    if (!user_id) return res.status(400).json({ error: "user_id requis." });
+    try {
+      // Le gerant ne consulte que ses propres membres.
+      const [u] = await sql`SELECT id FROM users WHERE id::text=${String(user_id)} AND gym_id=${gym_id}`;
+      if (!u) return res.status(403).json({ error: "Membre non trouvé dans votre fitness." });
+
+      const months = await sql`
+        SELECT TO_CHAR(m.d, 'YYYY-MM') AS ym, COALESCE(x.n, 0) AS n
+        FROM generate_series(
+               DATE_TRUNC('month', NOW() AT TIME ZONE 'Europe/Zurich') - INTERVAL '11 months',
+               DATE_TRUNC('month', NOW() AT TIME ZONE 'Europe/Zurich'),
+               INTERVAL '1 month') AS m(d)
+        LEFT JOIN (
+          SELECT DATE_TRUNC('month', s.scanned_at AT TIME ZONE 'Europe/Zurich') AS d,
+                 COUNT(*) AS n
+          FROM scans s
+          WHERE s.user_id::text = ${String(user_id)}
+          GROUP BY 1
+        ) x ON x.d = m.d
+        ORDER BY m.d ASC`;
+
+      return res.json({ months: months.map(r => ({ ym: r.ym, n: parseInt(r.n) })) });
+    } catch(e) { console.error("[api][member-scans]", e); return res.status(500).json({ error: "Erreur serveur." }); }
   }
 
   // ── VIREMENTS reçus ────────────────────────────────────
