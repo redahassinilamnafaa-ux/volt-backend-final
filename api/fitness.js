@@ -305,10 +305,35 @@ module.exports = async function handler(req, res) {
       if (!u) return res.status(403).json({ error: "Membre non trouvé dans votre fitness." });
 
       await ensureSubEventsTable(sql);
+      // Les paiements sont lus dans la table `payments`, qui fait autorite, et
+      // non dans subscription_events : ces evenements-la n'ont longtemps jamais
+      // ete ecrits (dans pay-confirm.js, logSubEvent etait appele APRES l'INSERT
+      // qui echouait, donc jamais atteint), si bien que l'historique d'un client
+      // n'affichait que les actions manuelles. Lire la source garantit que tout
+      // paiement encaisse apparait, y compris ceux rattrapes depuis Stripe.
+      //
+      // Les evenements 'payment'/'renewal' sont donc exclus de subscription_events,
+      // sinon les paiements recents y figureraient deux fois.
       const rows = await sql`
         SELECT event_type, source, plan, days, sub_started_at, sub_expires_at, note, created_at
-        FROM subscription_events
-        WHERE user_id = ${user_id}
+        FROM (
+          SELECT event_type, source, plan, days, sub_started_at, sub_expires_at, note, created_at
+          FROM subscription_events
+          WHERE user_id = ${user_id}
+            AND event_type NOT IN ('payment', 'renewal')
+          UNION ALL
+          SELECT 'payment'::text,
+                 (CASE WHEN method = 'twint' THEN 'twint' ELSE 'stripe' END)::text,
+                 plan::text,
+                 NULL::int,
+                 NULL::timestamptz,
+                 NULL::timestamptz,
+                 ('CHF ' || TO_CHAR(amount_chf, 'FM999990.00')
+                          || COALESCE(' — ' || stripe_payment_id, ''))::text,
+                 created_at
+          FROM payments
+          WHERE user_id = ${user_id} AND status = 'success'
+        ) h
         ORDER BY created_at DESC
         LIMIT 100`;
 
