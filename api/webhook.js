@@ -131,7 +131,12 @@ module.exports = async function handler(req, res) {
         const payType = pi.metadata?.payment_type;
         if (payType !== "twint" && payType !== "renew_card") break;
         const payMethod = payType === "twint" ? "twint" : "card";
-        const userId = pi.metadata?.volt_user_id ? parseInt(pi.metadata.volt_user_id) : null;
+        // PAS de parseInt : users.id est un uuid. parseInt("a3f9c2e1-…") renvoie
+        // NaN, la garde `if (userId && planId)` juste en dessous devenait donc
+        // fausse et le webhook ignorait SILENCIEUSEMENT chaque paiement TWINT —
+        // alors que c'est precisement le filet de securite prevu quand l'app se
+        // ferme pendant la redirection bancaire.
+        const userId = pi.metadata?.volt_user_id || null;
         const planId = pi.metadata?.plan_id;
         if (userId && planId) {
           // Idempotence : /api/pay-confirm et ce webhook reçoivent le même paiement.

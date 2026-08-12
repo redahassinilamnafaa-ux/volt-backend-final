@@ -357,9 +357,10 @@ module.exports = async function handler(req, res) {
           const key = keyOf(pi);
           if (have.has(key) || seen.has(key)) { skipped++; continue; }
 
+          // users.id est un uuid : surtout pas de parseInt ici (il renverrait
+          // NaN, ou pire un nombre tronque a partir des premiers chiffres).
           const u = typeof pi.customer === 'string' ? byCustomer.get(pi.customer) : null;
-          const metaId = parseInt(pi.metadata?.volt_user_id);
-          const userId = Number.isInteger(metaId) ? metaId : (u ? u.id : null);
+          const userId = pi.metadata?.volt_user_id || (u ? u.id : null);
           if (!userId) { skipped++; continue; }
 
           seen.add(key);
@@ -374,18 +375,27 @@ module.exports = async function handler(req, res) {
         }
 
         // Insertion groupee : une seule requete pour toute la page.
+        //
+        // Les identifiants transitent en TEXT et sont rapproches par
+        // `u.id::text = x.user_id`, de sorte que la colonne inseree soit
+        // toujours `u.id` avec son type natif. On ne code donc en dur ni uuid
+        // ni integer : une premiere version castait en ::int[] et echouait avec
+        // « column "user_id" is of type uuid but expression is of type integer ».
+        // Ce rapprochement garantit en prime qu'on n'insere jamais un paiement
+        // rattache a un utilisateur inexistant.
         if (rows.length) {
           const ins = await sql`
             INSERT INTO payments (user_id, plan, amount_chf, stripe_payment_id, method, status, created_at)
-            SELECT * FROM UNNEST(
-              ${rows.map(r => r.userId)}::int[],
+            SELECT u.id, x.plan, x.amount, x.key, x.method, 'success', x.at
+            FROM UNNEST(
+              ${rows.map(r => String(r.userId))}::text[],
               ${rows.map(r => r.plan)}::text[],
               ${rows.map(r => r.amount)}::numeric[],
               ${rows.map(r => r.key)}::text[],
               ${rows.map(r => r.method)}::text[],
-              ${rows.map(() => 'success')}::text[],
               ${rows.map(r => r.at)}::timestamptz[]
-            )
+            ) AS x(user_id, plan, amount, key, method, at)
+            JOIN users u ON u.id::text = x.user_id
             RETURNING id`;
           imported += ins.length;
         }
