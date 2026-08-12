@@ -102,6 +102,7 @@ module.exports = async function handler(req, res) {
       await ensurePauseColumns(sql);
       const rows = await sql`
         SELECT u.id,u.first_name,u.last_name,u.email,u.plan,u.subscribed,u.authorized,u.email_verified,u.created_at,
+          u.gym_id,
           u.sub_started_at, u.sub_expires_at, u.sub_paused_from, u.sub_paused_to,
           g.name as gym_name, g.filiale as gym_filiale,
           (SELECT COUNT(*) FROM scans s WHERE s.user_id=u.id AND s.scanned_at>NOW()-INTERVAL '30 days') as scans,
@@ -115,6 +116,7 @@ module.exports = async function handler(req, res) {
         subscribed:c.subscribed,
         authorized:c.authorized,
         email_verified:c.email_verified,
+        gym_id:c.gym_id,
         gym:c.gym_name||'—',
         filiale:c.gym_filiale||'',
         scans:parseInt(c.scans)||0,
@@ -131,6 +133,37 @@ module.exports = async function handler(req, res) {
         paused_to:   c.sub_paused_to   ? fmtCH(c.sub_paused_to)   : null
       })) });
     } catch(e) { console.error("[admin]", e); return res.status(500).json({ error:"Erreur serveur." }); }
+  }
+
+  // ── RATTACHER un client a un fitness ───────────────────
+  //
+  // Sans ce rattachement, les paiements du client sont absents de la
+  // Comptabilite, des Virements et du tableau de bord de la salle : ces trois
+  // vues joignent payments -> users -> gyms en INNER JOIN. Il n'existait
+  // pourtant aucun moyen de le faire depuis l'admin.
+  if (action === "client-gym" && req.method === "POST") {
+    const { user_id, gym_id } = req.body || {};
+    if (!user_id) return res.status(400).json({ error: "user_id requis." });
+    try {
+      // Rapprochements en ::text : le type des identifiants varie en base
+      // (users.id est un uuid la ou les migrations annoncaient un entier), on
+      // ne le presume donc jamais. La valeur ecrite reste l'id natif de gyms.
+      let target = null;
+      if (gym_id) {
+        const [g] = await sql`SELECT id FROM gyms WHERE id::text = ${String(gym_id)}`;
+        if (!g) return res.status(400).json({ error: "Fitness introuvable." });
+        target = g.id;
+      }
+      const rows = await sql`
+        UPDATE users SET gym_id = ${target}
+        WHERE id::text = ${String(user_id)}
+        RETURNING id`;
+      if (!rows.length) return res.status(404).json({ error: "Client introuvable." });
+      return res.json({ ok: true });
+    } catch(e) {
+      console.error("[admin][client-gym]", e);
+      return res.status(500).json({ error: "Erreur serveur.", detail: e.message });
+    }
   }
 
   // ── historique d'abonnement d'un client (lisible, chronologique) ──
