@@ -3,7 +3,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 process.env.JWT_SECRET = "test-secret";
-process.env.SETUP_KEY = "setup-key-test";
 process.env.CRON_SECRET = "cron-secret-test";
 process.env.DATABASE_URL_V1 = "postgres://test";
 
@@ -58,21 +57,27 @@ const ok = (r, code = 200) => { assert.equal(r.statusCode, code, JSON.stringify(
 test("parcours complet : setup → admin → salle → membres → tablette → autocontrôle → contrat → cron", async (t) => {
   db.__set(await makeSql());
 
-  await t.test("setup protégé puis migrations + premier admin", async () => {
-    assert.equal((await call("POST", "/setup", { body: {} })).statusCode, 403);
-    const r = ok(await call("POST", "/setup", { headers: { "x-setup-key": "setup-key-test" },
-      body: { admin_email: "reda@volt-energy.ch", admin_password: "motdepasse-admin" } }));
+  await t.test("setup : migrations + lien d'activation admin par email, puis activation", async () => {
+    outbox.length = 0;
+    const r = ok(await call("POST", "/setup"));
     assert.deepEqual(r.migrations, ["001_schema.sql"]);
-    assert.equal(r.admin, "créé");
-    // Relance idempotente.
-    assert.equal(ok(await call("POST", "/setup", { headers: { "x-setup-key": "setup-key-test" }, body: {} })).admin, "existant");
+    assert.match(r.admin, /lien d'activation envoyé à info@volt-energy\.ch/);
+    assert.equal(outbox[0].to, "info@volt-energy.ch");
+    const link = /(https:\/\/www\.volt-energy\.ch\/admin\?reset=\S+)/.exec(outbox[0].text)[1];
+    // Compte non activé : aucun mot de passe ne fonctionne.
+    assert.equal((await call("POST", "/auth/login", { body: { email: "info@volt-energy.ch", password: "!" } })).statusCode, 401);
+    ok(await call("POST", "/auth/reset", { body: { token: decodeURIComponent(link.split("reset=")[1]), password: "motdepasse-admin" } }));
+    // Relance idempotente : admin actif, plus d'email.
+    outbox.length = 0;
+    assert.equal(ok(await call("POST", "/setup")).admin, "actif");
+    assert.equal(outbox.length, 0);
   });
 
   let admin, gymToken, gymId, stationId, tablet, memberId;
 
   await t.test("login admin et refus des mauvais identifiants", async () => {
-    assert.equal((await call("POST", "/auth/login", { body: { email: "reda@volt-energy.ch", password: "faux" } })).statusCode, 401);
-    const r = ok(await call("POST", "/auth/login", { body: { email: "Reda@volt-energy.ch", password: "motdepasse-admin" } }));
+    assert.equal((await call("POST", "/auth/login", { body: { email: "info@volt-energy.ch", password: "faux" } })).statusCode, 401);
+    const r = ok(await call("POST", "/auth/login", { body: { email: "Info@volt-energy.ch", password: "motdepasse-admin" } }));
     assert.equal(r.role, "admin");
     admin = r.token;
     assert.equal((await call("GET", "/admin/gyms")).statusCode, 401);

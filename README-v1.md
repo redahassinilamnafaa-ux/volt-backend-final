@@ -9,22 +9,23 @@ Implémente `handoff_volt/02_backend/API.md`. Base : `https://<backend>/api/v1`.
 - Emails : Resend, expéditeur `no-reply@volt-energy.ch`, tous tracés dans `emails_log`.
 
 ## Variables d'environnement (Vercel)
+Aucune nouvelle variable obligatoire.
+
 | Variable | Rôle |
 |---|---|
-| `DATABASE_URL_V1` | Connexion Neon à la base `volt_v1` |
-| `JWT_SECRET` | Signature des sessions (déjà présent) |
-| `RESEND_API_KEY` | Envoi des emails (déjà présent) |
-| `SETUP_KEY` | Protège `POST /api/v1/setup` (long, aléatoire) |
-| `CRON_SECRET` | Vercel l'envoie automatiquement aux crons (`Authorization: Bearer …`) |
-| `VOLT_EMAIL` | Destinataire des alertes VOLT. (défaut `info@volt-energy.ch`) |
-| `APP_URL` | Liens dans les emails (défaut `https://www.volt-energy.ch`) |
+| `DATABASE_URL` | Déjà présente : la base `volt_v1` est créée et utilisée sur le même serveur Neon |
+| `DATABASE_URL_V1` | Facultatif : autre base pour la v1 |
+| `JWT_SECRET` / `RESEND_API_KEY` | Déjà présents |
+| `ADMIN_EMAIL` | Facultatif : compte admin (défaut `VOLT_EMAIL`) |
+| `VOLT_EMAIL` | Alertes VOLT. (défaut `info@volt-energy.ch`) |
+| `APP_URL` | Liens des emails (défaut `https://www.volt-energy.ch`) |
+| `CRON_SECRET` | Facultatif : si défini, exigé sur `/cron/tick` ; toujours exigé pour `?job=` |
 
 ## Installation (une fois)
 ```bash
-curl -X POST https://<backend>/api/v1/setup -H "x-setup-key: $SETUP_KEY" -H "Content-Type: application/json" \
-  -d '{"admin_email":"…","admin_password":"…"}'
+curl -X POST https://<backend>/api/v1/setup
 ```
-Applique les migrations (idempotent) et crée le premier admin s'il n'existe pas. Puis publier le contrat : `POST /admin/contract-versions {version:"2.0", text:"<html exact affiché>"}` (l'empreinte SHA-256 est calculée sur ce texte).
+Crée la base `volt_v1`, applique les migrations (idempotent) et, tant que le compte admin n'est pas activé, envoie à `ADMIN_EMAIL` un lien pour choisir le mot de passe (valable 24 h). Puis publier le contrat : `POST /admin/contract-versions {version:"2.0", text:"<html exact affiché>"}` (l'empreinte SHA-256 est calculée sur ce texte).
 
 ## Authentification
 - Gérant / admin : `POST /auth/login` → `{token}` + cookie httpOnly `volt_session` (SameSite=Lax). Le front envoie `Authorization: Bearer <token>` ; le cookie fonctionne si `/api/v1` est servi sur le même domaine que le site (réécriture Vercel conseillée).
