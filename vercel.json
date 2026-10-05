@@ -1,9 +1,13 @@
 {
   "version": 2,
   "functions": {
-    "api/*.js": { "maxDuration": 10 }
+    "api/*.js": { "maxDuration": 60, "includeFiles": "migrations/v1/**" }
   },
+  "rewrites": [
+    { "source": "/api/v1/:path*", "destination": "/api/v1?__path=:path*" }
+  ],
   "crons": [
-    { "path": "/api/webhook", "schedule": "0 8 * * *" }
+    { "path": "/api/webhook", "schedule": "0 8 * * *" },
+    { "path": "/api/v1/cron/tick", "schedule": "5 * * * *" }
   ]
 }

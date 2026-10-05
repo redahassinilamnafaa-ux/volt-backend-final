@@ -1,0 +1,240 @@
+{
+  "dosage_standard": {
+    "concentre_ml": 5,
+    "eau_ml": 400,
+    "intensites": [
+      "légère",
+      "standard",
+      "forte"
+    ]
+  },
+  "poche_l": 5,
+  "saveurs": [
+    {
+      "slug": "iced-tea-lemon",
+      "nom": "Iced Tea Lemon",
+      "arome": "Thé glacé citron",
+      "c1": "#D9A331",
+      "c2": "#8C6A1F",
+      "accroche": "Le classique thé glacé au citron, ultra rafraîchissant.",
+      "ingredients": "Eau, acidifiant (acide citrique), édulcorants (cyclamate, acésulfame K, saccharine), colorant (caramel au sulfite d'ammonium : contient des sulfites), arôme naturel, 1,4 % extrait de thé, 1 % jus de citron à base de concentré de jus de citron, sel, fructose, épaississant (gomme xanthane), niacine, conservateur (sorbate de potassium), vitamine B6, mononitrate de thiamine.",
+      "allergenes": [
+        "Sulfites"
+      ],
+      "kcal": "0,4",
+      "sucres": "0,01 g",
+      "sel": "0,01 g",
+      "portion": {
+        "kj": "7",
+        "kcal": "1,7",
+        "sucres": "0,05 g",
+        "sel": "0,06 g"
+      },
+      "vit": [
+        [
+          "Thiamine (vitamine B1)",
+          "0,33 mg",
+          "30 %"
+        ],
+        [
+          "Niacine (vitamine B3)",
+          "4,8 mg",
+          "30 %"
+        ],
+        [
+          "Vitamine B6",
+          "0,42 mg",
+          "30 %"
+        ]
+      ],
+      "ean": "4251650811836"
+    },
+    {
+      "slug": "multifruit",
+      "nom": "Multi Fruit",
+      "arome": "Mangue, orange, pêche, pomme",
+      "c1": "#E8722A",
+      "c2": "#96450F",
+      "accroche": "Un mélange multifruits gourmand et ensoleillé.",
+      "ingredients": "Eau, acidifiant (acide citrique), arôme, 2 % jus multifruits à base de concentré de jus de fruits (mangue, orange, pêche, pomme), édulcorants (cyclamate de sodium, acésulfame K, saccharine), colorants (anthocyanes, riboflavine), sel, fructose, épaississant (gomme xanthane), nicotinamide, conservateur (sorbate de potassium), chlorhydrate de pyridoxine, mononitrate de thiamine.",
+      "allergenes": [],
+      "kcal": "0,6",
+      "sucres": "0,01 g",
+      "sel": "0,01 g",
+      "portion": {
+        "kj": "10",
+        "kcal": "2,3",
+        "sucres": "0,04 g",
+        "sel": "0,05 g"
+      },
+      "vit": [
+        [
+          "Thiamine (vitamine B1)",
+          "0,33 mg",
+          "30 %"
+        ],
+        [
+          "Niacine (vitamine B3)",
+          "4,8 mg",
+          "30 %"
+        ],
+        [
+          "Vitamine B6",
+          "0,42 mg",
+          "30 %"
+        ]
+      ],
+      "ean": "4251650801585"
+    },
+    {
+      "slug": "peche-passion",
+      "nom": "Peach Passion Fruit",
+      "arome": "Pêche et fruit de la passion",
+      "c1": "#E06B45",
+      "c2": "#96402A",
+      "accroche": "Pêche et fruit de la passion, duo solaire.",
+      "ingredients": "Eau, acidifiant (acide citrique), édulcorants (cyclamate, acésulfame K, saccharine), arôme, 1 % jus de fruit de la passion à base de concentré, 1 % jus de pêche à base de concentré, sel, fructose, épaississant (gomme xanthane), colorant (bêta-carotène), niacine, stabilisant (ester glycérique de résine de bois, gomme arabique), conservateur (sorbate de potassium), vitamine B6, mononitrate de thiamine.",
+      "allergenes": [],
+      "kcal": "0,6",
+      "sucres": "0,01 g",
+      "sel": "0,01 g",
+      "portion": {
+        "kj": "10",
+        "kcal": "2,4",
+        "sucres": "0,04 g",
+        "sel": "0,05 g"
+      },
+      "vit": [
+        [
+          "Thiamine (vitamine B1)",
+          "0,33 mg",
+          "30 %"
+        ],
+        [
+          "Niacine (vitamine B3)",
+          "4,8 mg",
+          "30 %"
+        ],
+        [
+          "Vitamine B6",
+          "0,42 mg",
+          "30 %"
+        ]
+      ],
+      "ean": "4251650801592"
+    },
+    {
+      "slug": "cassis",
+      "nom": "Blackberry",
+      "arome": "Mûre",
+      "c1": "#4B2059",
+      "c2": "#26102E",
+      "accroche": "Mûre intense, pour les envies corsées.",
+      "ingredients": "Eau, acidifiant (acide citrique), arôme, édulcorants (cyclamate, acésulfame K, saccharine), 1 % jus de mûre à base de concentré de jus de mûre, aliment colorant (concentré de carotte, concentré de myrtille), colorant (caramel au sulfite d'ammonium : contient des sulfites), sel, fructose, épaississant (gomme xanthane), niacine, antimoussant (mono- et diglycérides d'acides gras), conservateur (sorbate de potassium), vitamine B6, mononitrate de thiamine.",
+      "allergenes": [
+        "Sulfites"
+      ],
+      "kcal": "0,7",
+      "sucres": "0,01 g",
+      "sel": "0,01 g",
+      "portion": {
+        "kj": "11",
+        "kcal": "2,6",
+        "sucres": "0,05 g",
+        "sel": "0,05 g"
+      },
+      "vit": [
+        [
+          "Thiamine (vitamine B1)",
+          "0,33 mg",
+          "30 %"
+        ],
+        [
+          "Niacine (vitamine B3)",
+          "4,8 mg",
+          "30 %"
+        ],
+        [
+          "Vitamine B6",
+          "0,42 mg",
+          "30 %"
+        ]
+      ],
+      "ean": "4251650805590"
+    },
+    {
+      "slug": "fruits-des-bois",
+      "nom": "Forest Fruit",
+      "arome": "Framboise et sureau",
+      "c1": "#7A1F3D",
+      "c2": "#3F0F1F",
+      "accroche": "Fruits des bois, framboise et sureau.",
+      "ingredients": "Eau, acidifiant (acide citrique), édulcorants (acésulfame K, cyclamate, saccharine), arôme, aliment colorant (concentré de carotte noire), sel, fructose, 0,5 % jus de framboise à base de concentré, 0,5 % jus de sureau à base de concentré, épaississant (gomme xanthane), niacine, conservateur (sorbate de potassium), vitamine B6, mononitrate de thiamine.",
+      "allergenes": [],
+      "kcal": "0,5",
+      "sucres": "0,01 g",
+      "sel": "0,01 g",
+      "portion": {
+        "kj": "8",
+        "kcal": "2,0",
+        "sucres": "0,05 g",
+        "sel": "0,05 g"
+      },
+      "vit": [
+        [
+          "Thiamine (vitamine B1)",
+          "0,33 mg",
+          "30 %"
+        ],
+        [
+          "Niacine (vitamine B3)",
+          "4,8 mg",
+          "30 %"
+        ],
+        [
+          "Vitamine B6",
+          "0,42 mg",
+          "30 %"
+        ]
+      ],
+      "ean": "4251650813069"
+    },
+    {
+      "slug": "pasteque",
+      "nom": "Watermelon",
+      "arome": "Pastèque",
+      "c1": "#D62B4C",
+      "c2": "#7A0F26",
+      "accroche": "Pastèque fraîche, désaltérante.",
+      "ingredients": "Eau, acidifiant (acide citrique), arôme, édulcorants (cyclamate, acésulfame K, saccharine), 1 % jus de pastèque à base de concentré, colorants (anthocyanes, riboflavine), sel, fructose, épaississant (gomme xanthane), antimoussant (mono- et diglycérides d'acides gras alimentaires), nicotinamide, conservateur (sorbate de potassium), chlorhydrate de pyridoxine, mononitrate de thiamine.",
+      "allergenes": [],
+      "kcal": "0,9",
+      "sucres": "0,01 g",
+      "sel": "0,01 g",
+      "portion": {
+        "kj": "15",
+        "kcal": "3,6",
+        "sucres": "0,04 g",
+        "sel": "0,05 g"
+      },
+      "vit": [
+        [
+          "Thiamine (vitamine B1)",
+          "0,33 mg",
+          "30 %"
+        ],
+        [
+          "Niacine (vitamine B3)",
+          "4,8 mg",
+          "30 %"
+        ],
+        [
+          "Vitamine B6",
+          "0,42 mg",
+          "30 %"
+        ]
+      ],
+      "ean": "4251650805903"
+    }
+  ]
+}
