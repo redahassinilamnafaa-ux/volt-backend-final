@@ -8,6 +8,7 @@
   ],
   "crons": [
     { "path": "/api/webhook", "schedule": "0 8 * * *" },
-    { "path": "/api/v1/cron/tick", "schedule": "5 * * * *" }
+    { "path": "/api/v1/cron/night", "schedule": "0 1 * * *" },
+    { "path": "/api/v1/cron/morning", "schedule": "0 6 * * *" }
   ]
 }
