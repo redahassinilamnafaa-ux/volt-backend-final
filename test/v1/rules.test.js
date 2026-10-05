@@ -107,3 +107,15 @@ test("applyPatch : pause avec prolongation et reprise manuelle", () => {
   // Champ simple : dates inchangées.
   assert.equal(M.applyPatch(cur, { notes: "VIP" }, today).value.fin, "2026-10-31");
 });
+
+test("migrations : découpage SQL et contrat v2.0 haché comme la page", async () => {
+  const fs = require("fs"), crypto = require("crypto");
+  const { splitSql } = require("../../lib/v1/routes/auth");
+  assert.deepEqual(splitSql("-- c\nselect 1;\nselect $x$a;\nb$x$;\n"), ["select 1", "select $x$a;\nb$x$"]);
+  const st = splitSql(fs.readFileSync(__dirname + "/../../migrations/v1/002_contract_v2.sql", "utf8"));
+  assert.equal(st.length, 2);
+  const txt = /\$ct\$([\s\S]*?)\$ct\$/.exec(st[1])[1];
+  assert.match(txt, /^1\. Parties\n/);
+  assert.match(txt, /\nv2\.0$/);
+  assert.equal(crypto.createHash("sha256").update(txt).digest("hex"), "073aecea1735d705cce1c3ca8c6ccda8208c325dd505fa369898e1ed9dddbbd8");
+});

@@ -60,7 +60,7 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
   await t.test("setup : migrations + lien d'activation admin par email, puis activation", async () => {
     outbox.length = 0;
     const r = ok(await call("POST", "/setup"));
-    assert.deepEqual(r.migrations, ["001_schema.sql"]);
+    assert.deepEqual(r.migrations, ["001_schema.sql", "002_contract_v2.sql", "003_admin_fields.sql"]);
     assert.match(r.admin, /lien d'activation envoyé à info@volt-energy\.ch/);
     assert.equal(outbox[0].to, "info@volt-energy.ch");
     const link = /(https:\/\/www\.volt-energy\.ch\/admin\?reset=\S+)/.exec(outbox[0].text)[1];
@@ -261,6 +261,30 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
     assert.ok(outbox.some((e) => /Rapport/.test(e.subject) && e.attachments?.length));
     ok(await call("GET", "/cron/tick?job=admin_recap", { headers: h }));
     assert.ok(outbox.some((e) => /Récap/.test(e.subject)));
+  });
+
+  await t.test("admin : champs du back-office (résilié, suspension, relais, entretien, membre créé par l'admin)", async () => {
+    const g = ok(await call("PATCH", "/admin/gyms/" + gymId, { token: admin, body: { contract_status: "resilie", suspended: true, signed_on: "2026-09-15" } })).gym;
+    assert.deepEqual([g.contract_status, g.suspended], ["resilie", true]);
+    assert.equal((await call("PATCH", "/admin/gyms/" + gymId, { token: admin, body: { contract_status: "inconnu" } })).statusCode, 400);
+    ok(await call("PATCH", "/admin/gyms/" + gymId, { token: admin, body: { contract_status: "signe", suspended: false } }));
+    ok(await call("PATCH", "/admin/stations/" + stationId, { token: admin, body: { relay_host: "192.168.1.50" } }));
+    assert.equal(ok(await call("GET", "/tablet/sync", { token: tablet })).station.relay_host, "192.168.1.50");
+    ok(await call("POST", "/admin/maintenances/plan", { token: admin, body: { station_id: stationId, date: "2027-04-01", slot: "9h", technician: "Luca B.", note: "Joints" } }));
+    ok(await call("POST", "/admin/maintenances", { token: admin, body: { station_id: stationId, done_on: "2026-10-01", type: "Réparation", technician: "Marco" } }));
+    const st = ok(await call("GET", "/admin/stations", { token: admin })).stations.find((x) => x.id === stationId);
+    assert.equal(st.next_maintenance_tech, "Luca B.");
+    assert.ok(st.maintenances.some((m) => m.type === "Réparation"));
+    outbox.length = 0;
+    const R = require("../../lib/v1/rules");
+    const created = ok(await call("POST", "/admin/members", { token: admin, body: { gym_id: gymId, prenom: "Ana", nom: "Lopez",
+      telephone: "+41793333333", email: "ana@mail.ch", numero_acces: "5550000000000005", debut: R.todayZurich(), fin: "2027-06-30" } }));
+    assert.equal(created.member.gym, "Fitness Crissier");
+    assert.equal(created.welcome_sent, true);
+    assert.equal((await call("POST", "/admin/members", { token: admin, body: { gym_id: gymId, prenom: "B", nom: "C",
+      telephone: "+41794444444", email: "b@mail.ch", numero_acces: "5550000000000005", debut: R.todayZurich(), fin: "2027-06-30" } })).statusCode, 409);
+    const net = ok(await call("GET", "/admin/passages", { token: admin })).passages;
+    assert.ok(net.length > 0 && net[0].gym === "Fitness Crissier");
   });
 
   await t.test("gérant isolé : ne voit pas les membres d'une autre salle", async () => {
