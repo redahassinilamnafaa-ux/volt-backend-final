@@ -2,7 +2,7 @@
 const { HttpError, cors, createRouter } = require("../lib/v1/http");
 
 const router = createRouter();
-for (const mod of ["auth", "gym", "admin", "tablet", "cron"]) require(`../lib/v1/routes/${mod}`)(router.route);
+for (const mod of ["auth", "gym", "admin", "tablet", "cron", "site"]) require(`../lib/v1/routes/${mod}`)(router.route);
 
 // Erreurs Postgres courantes → messages lisibles.
 function pgError(e) {
