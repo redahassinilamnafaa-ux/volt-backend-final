@@ -60,7 +60,7 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
   await t.test("setup : migrations + lien d'activation admin par email, puis activation", async () => {
     outbox.length = 0;
     const r = ok(await call("POST", "/setup"));
-    assert.deepEqual(r.migrations, ["001_schema.sql", "002_contract_v2.sql", "003_admin_fields.sql", "004_station_block.sql", "005_station_events.sql", "006_site_views.sql"]);
+    assert.deepEqual(r.migrations, ["001_schema.sql", "002_contract_v2.sql", "003_admin_fields.sql", "004_station_block.sql", "005_station_events.sql", "006_site_views.sql", "007_site_events.sql"]);
     assert.match(r.admin, /lien d'activation envoyé à info@volt-energy\.ch/);
     assert.equal(outbox[0].to, "info@volt-energy.ch");
     const link = /(https:\/\/www\.volt-energy\.ch\/admin\?reset=\S+)/.exec(outbox[0].text)[1];
@@ -428,6 +428,38 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
     assert.deepEqual(s.devices, [{ device: "mobile", visits: 2 }]);
     const cols = (await db()`SELECT column_name FROM information_schema.columns WHERE table_name = 'site_views'`).map((c) => c.column_name);
     assert.ok(!cols.some((c) => /ip|agent|cookie/.test(c)), "ni IP ni user-agent conservés");
+  });
+
+  await t.test("site public : actions (contact, quiz, clics, lecture) sans identifiant, provenance et page d'origine", async () => {
+    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36";
+    const ev = (body) => call("POST", "/track", { body: JSON.stringify(body), headers: { "user-agent": UA } });
+    // Contact depuis /contact après être passé par /saveurs (page précédente connue, provenance inconnue)
+    ok(await ev({ e: "contact", x: "Je gère une salle", p: "/contact", r: "https://www.volt-energy.ch/saveurs" }));
+    // Clic téléphone sur la page d'arrivée, venu de Google → provenance google.com
+    ok(await ev({ e: "tel", p: "/distributeur-boissons-fitness-lausanne", r: "https://www.google.com/" }));
+    // Quiz terminé, arrivé par un lien de campagne
+    ok(await ev({ e: "quiz", x: "Cassis", p: "/le-test", s: "Newsletter" }));
+    ok(await ev({ e: "lecture", p: "/saveurs", d: 82, t: 41 }));
+    ok(await ev({ e: "lecture", p: "/saveurs", d: 40, t: 9 }));
+    ok(await ev({ e: "sortie", x: "instagram.com", p: "/" }));
+    ok(await ev({ e: "piratage", p: "/" }));
+    ok(await ev({ e: "contact", p: "/admin" }));
+    ok(await ev({ e: "lecture", p: "/", d: 900, t: -5 }));
+    const s = ok(await call("GET", "/admin/stats", { token: admin })).site;
+    assert.deepEqual([s.actions.contact.n, s.actions.tel.n, s.actions.quiz.n, s.actions.lecture.n, s.actions.sortie.n], [1, 1, 1, 3, 1], "type inconnu et pages privées ignorés");
+    assert.equal(s.daily.reduce((a, d) => a + d.leads, 0), 2, "prises de contact = formulaire + clics");
+    assert.deepEqual(s.lead_pages.map((p) => p.path).sort(), ["/distributeur-boissons-fitness-lausanne", "/saveurs"], "le contact est attribué à la page d'avant");
+    const src = Object.fromEntries(s.lead_sources.map((x) => [x.source, [x.leads, x.quiz]]));
+    assert.deepEqual(src, { "?": [1, 0], "google.com": [1, 0], newsletter: [0, 1] });
+    assert.deepEqual(s.quiz, [{ label: "Cassis", n: 1 }]);
+    assert.deepEqual(s.contact_subjects, [{ label: "Je gère une salle", n: 1 }]);
+    const sv = s.reading.find((r) => r.path === "/saveurs");
+    assert.deepEqual([sv.n, sv.depth, sv.seconds, sv.read_75], [2, 61, 25, 1]);
+    const home = s.reading.find((r) => r.path === "/");
+    assert.deepEqual([home.depth, home.seconds], [100, 0], "valeurs bornées");
+    assert.deepEqual(s.reading_avg, { depth: 74, seconds: 17 });
+    const cols = (await db()`SELECT column_name FROM information_schema.columns WHERE table_name = 'site_events'`).map((c) => c.column_name);
+    assert.ok(!cols.some((c) => /ip|agent|visitor|cookie|session/.test(c)), "aucun identifiant de visiteur");
   });
 
   await t.test("gérant isolé : ne voit pas les membres d'une autre salle", async () => {
