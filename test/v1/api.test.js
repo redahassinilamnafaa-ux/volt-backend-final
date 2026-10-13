@@ -410,7 +410,7 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
   await t.test("site public : pages vues sans cookie, robots et pages privées ignorés, statistiques admin", async () => {
     const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148";
     const geo = { "user-agent": UA, "x-vercel-ip-country": "CH", "x-vercel-ip-country-region": "VD", "x-vercel-ip-city": "Lausanne" };
-    const track = (body, headers = geo) => call("POST", "/track", { body: JSON.stringify(body), headers });
+    const track = (body, headers = geo) => call("POST", "/p", { body: JSON.stringify(body), headers });
     ok(await track({ p: "/", r: "https://www.google.com/search?q=volt", n: true, l: "fr-CH" }));
     ok(await track({ p: "/fitness-club?x=1", r: "https://volt-energy.ch/", n: false }));
     ok(await track({ p: "/", s: "Instagram", n: true }, { ...geo, "x-vercel-ip-city": "Z%C3%BCrich", "x-vercel-ip-country-region": "ZH" }));
