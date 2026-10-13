@@ -60,7 +60,7 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
   await t.test("setup : migrations + lien d'activation admin par email, puis activation", async () => {
     outbox.length = 0;
     const r = ok(await call("POST", "/setup"));
-    assert.deepEqual(r.migrations, ["001_schema.sql", "002_contract_v2.sql", "003_admin_fields.sql"]);
+    assert.deepEqual(r.migrations, ["001_schema.sql", "002_contract_v2.sql", "003_admin_fields.sql", "004_station_block.sql"]);
     assert.match(r.admin, /lien d'activation envoyé à info@volt-energy\.ch/);
     assert.equal(outbox[0].to, "info@volt-energy.ch");
     const link = /(https:\/\/www\.volt-energy\.ch\/admin\?reset=\S+)/.exec(outbox[0].text)[1];
@@ -285,6 +285,50 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
       telephone: "+41794444444", email: "b@mail.ch", numero_acces: "5550000000000005", debut: R.todayZurich(), fin: "2027-06-30" } })).statusCode, 409);
     const net = ok(await call("GET", "/admin/passages", { token: admin })).passages;
     assert.ok(net.length > 0 && net[0].gym === "Fitness Crissier");
+  });
+
+  await t.test("admin : station bloquée = passages refusés (ligne, sync, heartbeat), puis débloquée", async () => {
+    const gym = ok(await call("POST", "/auth/login", { body: { email: "gerant@fitness.ch", password: "nouveau-motdepasse" } })).token;
+    const before = ok(await call("GET", "/admin/passages", { token: admin })).passages.length;
+    const b = ok(await call("PATCH", "/admin/stations/" + stationId, { token: admin, body: { blocked: true, blocked_reason: "Litige en cours" } })).station;
+    assert.deepEqual([b.blocked, b.blocked_reason], [true, "Litige en cours"]);
+    assert.ok(b.blocked_at);
+    const refused = ok(await call("POST", "/tablet/verify", { token: tablet, body: { code: "5550000000000005" } }));
+    assert.deepEqual([refused.result, refused.reason], ["inactive", "station_bloquee"]);
+    assert.equal(ok(await call("GET", "/admin/passages", { token: admin })).passages.length, before, "rien n'est journalisé ni décompté");
+    const sync = ok(await call("GET", "/tablet/sync", { token: tablet })).station;
+    assert.deepEqual([sync.blocked, sync.blocked_reason], [true, "Litige en cours"]);
+    assert.equal(ok(await call("POST", "/tablet/heartbeat", { token: tablet, body: { relay_ok: true } })).blocked, true);
+    assert.equal(ok(await call("GET", "/gym/stations", { token: gym })).stations[0].blocked, true);
+    assert.equal(ok(await call("GET", "/admin/stations", { token: admin })).stations.find((x) => x.id === stationId).blocked, true);
+    // Déblocage : motif et horodatage vidés, la tablette sert à nouveau.
+    const u = ok(await call("PATCH", "/admin/stations/" + stationId, { token: admin, body: { blocked: false } })).station;
+    assert.deepEqual([u.blocked, u.blocked_reason, u.blocked_at], [false, null, null]);
+    assert.equal(ok(await call("POST", "/tablet/verify", { token: tablet, body: { code: "5550000000000005" } })).result, "ok");
+    // Un gérant ne peut pas bloquer une station (route admin).
+    assert.equal((await call("PATCH", "/admin/stations/" + stationId, { token: gym, body: { blocked: true } })).statusCode, 403);
+  });
+
+  await t.test("admin : livraisons et entretiens modifiables / supprimables", async () => {
+    const del = ok(await call("GET", "/admin/deliveries", { token: admin })).deliveries[0];
+    ok(await call("PATCH", "/admin/deliveries/" + del.id, { token: admin, body: { stock_days: 30, note: "Corrigée", items: [{ product: "Cassis", qty: 9 }] } }));
+    const edited = ok(await call("GET", "/admin/deliveries", { token: admin })).deliveries.find((x) => x.id === del.id);
+    assert.deepEqual([edited.stock_days, edited.note, edited.items], [30, "Corrigée", [{ product: "Cassis", qty: 9 }]]);
+    assert.equal((await call("PATCH", "/admin/deliveries/" + del.id, { token: admin, body: { items: [] } })).statusCode, 400);
+    assert.equal((await call("PATCH", "/admin/deliveries/" + del.id, { token: admin, body: { stock_days: 0 } })).statusCode, 400);
+    assert.equal(ok(await call("GET", "/admin/deliveries", { token: admin })).deliveries.find((x) => x.id === del.id).items.length, 1, "un refus ne modifie rien");
+    ok(await call("DELETE", "/admin/deliveries/" + del.id, { token: admin }));
+    assert.equal((await call("DELETE", "/admin/deliveries/" + del.id, { token: admin })).statusCode, 404);
+    assert.equal(ok(await call("GET", "/admin/deliveries", { token: admin })).deliveries.length, 0);
+
+    const mid = ok(await call("GET", "/admin/maintenances", { token: admin })).maintenances.find((x) => x.type === "Réparation").id;
+    ok(await call("PATCH", "/admin/maintenances/" + mid, { token: admin, body: { type: "Contrôle", technician: "Luca", note: "Joints changés" } }));
+    const m = ok(await call("GET", "/admin/maintenances", { token: admin })).maintenances.find((x) => x.id === mid);
+    assert.deepEqual([m.type, m.technician, m.note], ["Contrôle", "Luca", "Joints changés"]);
+    assert.equal((await call("PATCH", "/admin/maintenances/" + mid, { token: admin, body: { type: "Inconnu" } })).statusCode, 400);
+    assert.equal((await call("PATCH", "/admin/maintenances/" + mid, { token: admin, body: { done_on: "pas une date" } })).statusCode, 400);
+    ok(await call("DELETE", "/admin/maintenances/" + mid, { token: admin }));
+    assert.equal((await call("DELETE", "/admin/maintenances/" + mid, { token: admin })).statusCode, 404);
   });
 
   await t.test("gérant isolé : ne voit pas les membres d'une autre salle", async () => {

@@ -38,6 +38,9 @@ Crée la base `volt_v1`, applique les migrations (idempotent) et, tant que le co
 - PDF du contrat : régénéré à la demande (`GET /gym/contract/pdf`), envoyé à la signature au contact de la salle, au gérant et à VOLT.
 - Crons : un seul cron horaire `/api/v1/cron/tick` qui lance chaque tâche à son heure de Zurich (03:00 purge/agrégats, 07:00 le 1er rapport mensuel, 08:00 emails salles + récap admin). Lancement manuel : `?job=nightly|monthly|gym_daily|admin_recap`.
 - Routes en plus : `POST /auth/logout`, `GET /gym/contract`, `GET /gym/contract/pdf`, `POST /admin/gyms/:id/user`, `GET/POST /admin/contract-versions`.
+- Livraisons / entretiens modifiables (admin) : `PATCH|DELETE /admin/deliveries/:id` (si `items` est fourni il remplace la liste), `PATCH|DELETE /admin/maintenances/:id`. Chaque appel est journalisé dans `admin_audit`.
+- Blocage d'une station (migration `004_station_block.sql`, **à appliquer avant de déployer ce code**) : `PATCH /admin/stations/:id {blocked:true, blocked_reason?}` / `{blocked:false}`. Tant que la station est bloquée, `POST /tablet/verify` répond `{result:"inactive", reason:"station_bloquee"}` sans rien journaliser ni décompter ; `/tablet/sync` (`station.blocked`, `station.blocked_reason`) et la réponse de `/tablet/heartbeat` (`blocked`, `blocked_reason`) permettent à la tablette de refuser aussi hors ligne. `/gym/stations` et `/admin/stations` exposent `blocked`, `blocked_reason` (+ `blocked_at` côté admin).
+- État du Shelly : le serveur ne peut pas joindre le relais (réseau local de la salle). C'est la tablette qui le teste et le déclare : `relay_ok` dans chaque `/tablet/heartbeat` et après chaque distribution via `/tablet/relay-result`. « Tablette en ligne » = dernier heartbeat < 2 min.
 
 ## Tests
 `npm test` : règles métier + parcours complet de l'API sur un Postgres en mémoire (PGlite).
