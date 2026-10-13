@@ -60,7 +60,7 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
   await t.test("setup : migrations + lien d'activation admin par email, puis activation", async () => {
     outbox.length = 0;
     const r = ok(await call("POST", "/setup"));
-    assert.deepEqual(r.migrations, ["001_schema.sql", "002_contract_v2.sql", "003_admin_fields.sql", "004_station_block.sql", "005_station_events.sql"]);
+    assert.deepEqual(r.migrations, ["001_schema.sql", "002_contract_v2.sql", "003_admin_fields.sql", "004_station_block.sql", "005_station_events.sql", "006_site_views.sql"]);
     assert.match(r.admin, /lien d'activation envoyé à info@volt-energy\.ch/);
     assert.equal(outbox[0].to, "info@volt-energy.ch");
     const link = /(https:\/\/www\.volt-energy\.ch\/admin\?reset=\S+)/.exec(outbox[0].text)[1];
@@ -378,6 +378,56 @@ test("parcours complet : setup → admin → salle → membres → tablette → 
     ok(await call("GET", "/cron/tick?job=nightly", { headers: h }));
     const [{ n }] = await db()`SELECT count(*)::int AS n FROM station_events WHERE kind = 'ancien'`;
     assert.equal(n, 0, "incident de plus de 30 jours purgé");
+  });
+
+  await t.test("admin : statistiques d'exploitation (période, salle, heures de pointe, stock)", async () => {
+    const R = require("../../lib/v1/rules");
+    ok(await call("POST", "/admin/deliveries", { token: admin, body: { gym_id: gymId, delivered_on: R.todayZurich(), stock_days: 10, items: [{ product: "Cassis", qty: 2 }] } }));
+    const s = ok(await call("GET", "/admin/stats", { token: admin }));
+    assert.equal(s.period.days, 30);
+    assert.equal(s.daily.length, 30);
+    assert.equal(s.daily[29].day, s.period.to);
+    assert.ok(s.totals.ok >= 1);
+    assert.equal(s.totals.ok, s.daily.reduce((a, d) => a + d.ok, 0), "la courbe additionne le total");
+    assert.ok(s.refusals.some((r) => r.result === "delai"));
+    assert.ok(s.heatmap.length >= 1 && s.heatmap.every((c) => c.dow >= 1 && c.dow <= 7 && c.hour >= 0 && c.hour <= 23));
+    assert.equal(s.heatmap.reduce((a, c) => a + c.n, 0), s.totals.ok, "heures de pointe = boissons servies");
+    const g = s.gyms.find((x) => x.id === gymId);
+    assert.ok(g.actifs >= 1 && g.inscrits >= g.actifs);
+    assert.ok(g.utilisation > 0 && g.utilisation <= 1);
+    assert.equal(g.buveurs + g.jamais, g.actifs, "chaque membre actif a bu ou non");
+    assert.equal(g.stock.capacite, 2000, "2 poches de 5 L = 2000 boissons");
+    assert.equal(g.stock.restant, 2000 - g.ok_depuis_livraison);
+    // Filtres : période et salle (une salle inconnue ne renvoie rien)
+    assert.equal(ok(await call("GET", "/admin/stats?days=7", { token: admin })).daily.length, 7);
+    assert.equal(ok(await call("GET", "/admin/stats?days=45", { token: admin })).period.days, 30, "période inconnue → 30 jours");
+    const none = ok(await call("GET", "/admin/stats?days=7&gym_id=00000000-0000-4000-8000-000000000000", { token: admin }));
+    assert.deepEqual([none.gyms.length, none.totals.ok], [0, 0]);
+    // Réservé à l'admin
+    assert.equal((await call("GET", "/admin/stats", { token: gymToken })).statusCode, 403);
+  });
+
+  await t.test("site public : pages vues sans cookie, robots et pages privées ignorés, statistiques admin", async () => {
+    const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148";
+    const geo = { "user-agent": UA, "x-vercel-ip-country": "CH", "x-vercel-ip-country-region": "VD", "x-vercel-ip-city": "Lausanne" };
+    const track = (body, headers = geo) => call("POST", "/track", { body: JSON.stringify(body), headers });
+    ok(await track({ p: "/", r: "https://www.google.com/search?q=volt", n: true, l: "fr-CH" }));
+    ok(await track({ p: "/fitness-club?x=1", r: "https://volt-energy.ch/", n: false }));
+    ok(await track({ p: "/", s: "Instagram", n: true }, { ...geo, "x-vercel-ip-city": "Z%C3%BCrich", "x-vercel-ip-country-region": "ZH" }));
+    ok(await track({ p: "/" , n: true }, { "user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1)" }));
+    ok(await track({ p: "/admin", n: true }));
+    ok(await track({ p: "/fitness/membres", n: true }));
+    ok(await call("POST", "/track", { body: "pas du json", headers: geo }));
+    const s = ok(await call("GET", "/admin/stats", { token: admin })).site;
+    assert.deepEqual([s.totals.views, s.totals.visits, s.totals.visits_mobile, s.totals.live], [3, 2, 2, 3]);
+    assert.equal(s.daily.length, 30);
+    assert.equal(s.daily.reduce((a, d) => a + d.views, 0), 3);
+    assert.deepEqual(s.pages.map((p) => [p.path, p.views]), [["/", 2], ["/fitness-club", 1]], "requête retirée, robots et pages privées exclus");
+    assert.deepEqual(s.sources.map((x) => x.source).sort(), ["google.com", "instagram"]);
+    assert.deepEqual(s.places.map((p) => p.city).sort(), ["Lausanne", "Zürich"]);
+    assert.deepEqual(s.devices, [{ device: "mobile", visits: 2 }]);
+    const cols = (await db()`SELECT column_name FROM information_schema.columns WHERE table_name = 'site_views'`).map((c) => c.column_name);
+    assert.ok(!cols.some((c) => /ip|agent|cookie/.test(c)), "ni IP ni user-agent conservés");
   });
 
   await t.test("gérant isolé : ne voit pas les membres d'une autre salle", async () => {
